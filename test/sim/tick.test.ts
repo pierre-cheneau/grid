@@ -42,10 +42,7 @@ describe('simulateTick', () => {
   });
 
   it('determinism: same inputs from same state produce identical hashes', () => {
-    const s = withPlayers(emptyState(), [
-      makePlayer('p:a', 2, 2, 1),
-      makePlayer('p:b', 12, 12, 3),
-    ]);
+    const s = withPlayers(emptyState(), [makePlayer('p:a', 2, 2, 1), makePlayer('p:b', 12, 12, 3)]);
     const a = step(s, 5);
     const b = step(s, 5);
     assert.equal(hashState(a), hashState(b));
@@ -75,13 +72,8 @@ describe('simulateTick', () => {
     // Pre-seed an a-owned trail at (3,5). p:b at (2,5) facing E will walk into it.
     const cfg = makeConfig({ width: 16, height: 16 });
     const s: GridState = {
-      ...withPlayers(emptyState(cfg), [
-        makePlayer('p:a', 10, 10, 1),
-        makePlayer('p:b', 2, 5, 1),
-      ]),
-      cells: new Map([
-        ['00050003', { type: 'trail', ownerId: 'p:a', createdAtTick: 0 }],
-      ]),
+      ...withPlayers(emptyState(cfg), [makePlayer('p:a', 10, 10, 1), makePlayer('p:b', 2, 5, 1)]),
+      cells: new Map([['00050003', { type: 'trail', ownerId: 'p:a', createdAtTick: 0 }]]),
     };
     const s1 = simulateTick(s, noInputs);
     assert.equal(s1.players.get('p:b')?.isAlive, false);

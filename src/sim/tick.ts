@@ -25,22 +25,14 @@
 // Every step that produces a collection produces a NEW collection. The "previous"
 // state references in this function are read-only.
 
-import { TICK_MAX, RESPAWN_TICKS, DIRECTION_COUNT } from './constants.js';
+import { DIRECTION_COUNT, RESPAWN_TICKS, TICK_MAX } from './constants.js';
 import { decayCells } from './decay.js';
 import { applyTurn, cellKey } from './grid.js';
 import { sortedEntries, sortedKeys } from './iter.js';
 import { resolveMoves } from './movement.js';
 import { pickSpawnCell } from './respawn.js';
 import { cloneRng, nextRangeU32 } from './rng.js';
-import type {
-  Cell,
-  Direction,
-  GridState,
-  Inputs,
-  Player,
-  PlayerId,
-  RngState,
-} from './types.js';
+import type { Cell, Direction, GridState, Inputs, Player, PlayerId, RngState } from './types.js';
 
 export function simulateTick(prev: GridState, inputs: Inputs): GridState {
   if (prev.tick >= TICK_MAX) {
@@ -52,7 +44,7 @@ export function simulateTick(prev: GridState, inputs: Inputs): GridState {
   // Step 4 + 6: build the working player map by processing exits and applying turns,
   // in sorted order so any rng consumption that depends on iteration is deterministic.
   // (Stage 1 doesn't consume rng here, but the discipline matters.)
-  let players = new Map<PlayerId, Player>();
+  const players = new Map<PlayerId, Player>();
   for (const [id, player] of sortedEntries(prev.players)) {
     const turn = inputs.turns.get(id) ?? '';
     if (turn === 'X') continue; // exit: drop the player

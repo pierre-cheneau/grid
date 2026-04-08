@@ -43,11 +43,11 @@ export function cloneRng(rng: RngState): RngState {
 export function nextU32(rng: RngState): number {
   const oldstate = rng.state;
   rng.state = (oldstate * PCG_MULT + PCG_INC) & MASK_64;
-  const xorshifted = Number(((oldstate >> 18n) ^ oldstate) >> 27n & MASK_32);
+  const xorshifted = Number((((oldstate >> 18n) ^ oldstate) >> 27n) & MASK_32);
   const rot = Number(oldstate >> 59n) & 31;
   // ((xorshifted >>> rot) | (xorshifted << ((-rot) & 31))) >>> 0
   const right = xorshifted >>> rot;
-  const left = (xorshifted << ((-rot) & 31)) >>> 0;
+  const left = (xorshifted << (-rot & 31)) >>> 0;
   return (right | left) >>> 0;
 }
 

@@ -2,8 +2,8 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { newRng } from '../../src/sim/rng.js';
 import { pickSpawnCell } from '../../src/sim/respawn.js';
+import { newRng } from '../../src/sim/rng.js';
 import type { Cell, Config } from '../../src/sim/types.js';
 
 const cfg: Config = { width: 8, height: 8, halfLifeTicks: 60, seed: 0n };

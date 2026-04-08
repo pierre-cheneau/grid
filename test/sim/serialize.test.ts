@@ -101,10 +101,7 @@ describe('canonicalBytes', () => {
     const dead: GridState = {
       ...emptyState(),
       players: new Map([
-        [
-          'p:a',
-          { ...makePlayer('p:a', 0, 0), isAlive: false, respawnAtTick: 30 },
-        ],
+        ['p:a', { ...makePlayer('p:a', 0, 0), isAlive: false, respawnAtTick: 30 }],
       ]),
     };
     assert.notDeepEqual(canonicalBytes(alive), canonicalBytes(dead));

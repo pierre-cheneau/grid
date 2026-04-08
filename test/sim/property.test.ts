@@ -1,16 +1,9 @@
-// Property-based tests for the simulation core.
-//
-// These six properties are the testing.md contract. Each one expresses a structural
-// invariant that no scripted scenario can fully cover. fast-check generates many
-// distinct (initialState, inputs) pairs and asserts the property for each.
-
-import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import fc from 'fast-check';
 import { hashState } from '../../src/sim/hash.js';
+import { newRng } from '../../src/sim/rng.js';
 import { simulateTick } from '../../src/sim/tick.js';
 import type { Direction, GridState, Inputs, Player, Turn } from '../../src/sim/types.js';
-import { newRng } from '../../src/sim/rng.js';
 
 fc.configureGlobal({ numRuns: 80 });
 
@@ -48,10 +41,13 @@ const stateArb = fc
     };
   });
 
-const inputsArb = fc.array(
-  fc.record({ a: turnArb, b: turnArb }),
-  { minLength: 1, maxLength: 30 },
-);
+const inputsArb = fc.array(fc.record({ a: turnArb, b: turnArb }), { minLength: 1, maxLength: 30 });
+
+function lastState(states: GridState[]): GridState {
+  const s = states[states.length - 1];
+  if (s === undefined) throw new Error('runSequence returned no states');
+  return s;
+}
 
 function runSequence(initial: GridState, seq: ReadonlyArray<{ a: Turn; b: Turn }>): GridState[] {
   const out: GridState[] = [initial];
@@ -83,7 +79,7 @@ describe('properties', () => {
       fc.property(stateArb, inputsArb, (s0, seq) => {
         const a = runSequence(s0, seq);
         const b = runSequence(s0, seq);
-        return hashState(a[a.length - 1]!) === hashState(b[b.length - 1]!);
+        return hashState(lastState(a)) === hashState(lastState(b));
       }),
     );
   });
@@ -112,8 +108,8 @@ describe('properties', () => {
     fc.assert(
       fc.property(stateArb, inputsArb, (s0, seq) => {
         const reordered = reorderMaps(s0);
-        const h1 = hashState(runSequence(s0, seq).at(-1)!);
-        const h2 = hashState(runSequence(reordered, seq).at(-1)!);
+        const h1 = hashState(lastState(runSequence(s0, seq)));
+        const h2 = hashState(lastState(runSequence(reordered, seq)));
         return h1 === h2;
       }),
     );
@@ -130,31 +126,28 @@ describe('properties', () => {
 
   it('6. decay completeness: with no live players, all cells eventually disappear', () => {
     fc.assert(
-      fc.property(
-        fc.bigInt({ min: 0n, max: 0xffff_ffffn }),
-        (seed) => {
-          // Bootstrap a state with cells but no live players: run a 1-player scenario
-          // for a few ticks to lay trail, then exit the player and let cells decay.
-          let s: GridState = {
-            tick: 0,
-            config: { ...cfg, seed },
-            rng: newRng(seed),
-            players: new Map([['p:a', makePlayer('p:a', 4, 4, 1)]]),
-            cells: new Map(),
-          };
-          for (let i = 0; i < 5; i++) {
-            s = simulateTick(s, { turns: new Map(), joins: [] });
-          }
-          // Exit p:a.
-          s = simulateTick(s, { turns: new Map([['p:a', 'X']]), joins: [] });
-          const initialCellCount = s.cells.size;
-          // Step long enough that the oldest cell exceeds 2 * halfLifeTicks.
-          for (let i = 0; i < cfg.halfLifeTicks * 2 + 10; i++) {
-            s = simulateTick(s, { turns: new Map(), joins: [] });
-          }
-          return initialCellCount > 0 ? s.cells.size === 0 : true;
-        },
-      ),
+      fc.property(fc.bigInt({ min: 0n, max: 0xffff_ffffn }), (seed) => {
+        // Bootstrap a state with cells but no live players: run a 1-player scenario
+        // for a few ticks to lay trail, then exit the player and let cells decay.
+        let s: GridState = {
+          tick: 0,
+          config: { ...cfg, seed },
+          rng: newRng(seed),
+          players: new Map([['p:a', makePlayer('p:a', 4, 4, 1)]]),
+          cells: new Map(),
+        };
+        for (let i = 0; i < 5; i++) {
+          s = simulateTick(s, { turns: new Map(), joins: [] });
+        }
+        // Exit p:a.
+        s = simulateTick(s, { turns: new Map([['p:a', 'X']]), joins: [] });
+        const initialCellCount = s.cells.size;
+        // Step long enough that the oldest cell exceeds 2 * halfLifeTicks.
+        for (let i = 0; i < cfg.halfLifeTicks * 2 + 10; i++) {
+          s = simulateTick(s, { turns: new Map(), joins: [] });
+        }
+        return initialCellCount > 0 ? s.cells.size === 0 : true;
+      }),
     );
   });
 });

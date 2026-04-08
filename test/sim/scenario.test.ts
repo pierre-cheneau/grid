@@ -4,8 +4,8 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { hashState } from '../../src/sim/hash.js';
 import { runScenario } from '../../scripts/determinism-hash.js';
+import { hashState } from '../../src/sim/hash.js';
 
 describe('determinism scenario', () => {
   it('produces the pinned hash', () => {

@@ -74,20 +74,26 @@ describe('rng', () => {
       const rng = newRng(0n);
       const seq: number[] = [];
       for (let i = 0; i < 8; i++) seq.push(nextU32(rng));
-      assert.deepEqual(seq, [
-        1092706980, 278790474, 1039822109, 1377468856, 2033553421, 812736149, 2537966385,
-        2065831338,
-      ]);
+      assert.deepEqual(
+        seq,
+        [
+          1092706980, 278790474, 1039822109, 1377468856, 2033553421, 812736149, 2537966385,
+          2065831338,
+        ],
+      );
     });
 
     it('produces the pinned sequence for seed=42n', () => {
       const rng = newRng(42n);
       const seq: number[] = [];
       for (let i = 0; i < 8; i++) seq.push(nextU32(rng));
-      assert.deepEqual(seq, [
-        3344234869, 1768956483, 4001043839, 743431577, 2248556757, 1371427516, 2826524762,
-        1106090679,
-      ]);
+      assert.deepEqual(
+        seq,
+        [
+          3344234869, 1768956483, 4001043839, 743431577, 2248556757, 1371427516, 2826524762,
+          1106090679,
+        ],
+      );
     });
   });
 

@@ -19,8 +19,8 @@
 // Returns: a `MoveResolution` describing each player's outcome. The caller composes
 // the new state from this resolution.
 
+import { DIR_DELTA, cellKey, inBounds } from './grid.js';
 import { sortedEntries } from './iter.js';
-import { cellKey, DIR_DELTA, inBounds } from './grid.js';
 import type { Cell, Config, Player, PlayerId, Position } from './types.js';
 
 /** Per-player outcome for a single tick. */
@@ -115,7 +115,12 @@ export function resolveMoves(
     const targetKey = cellKey(m.to.x, m.to.y);
     const other = fromIndex.get(targetKey);
     if (other === undefined || other === m) continue;
-    if (other.from.x === m.to.x && other.from.y === m.to.y && other.to.x === m.from.x && other.to.y === m.from.y) {
+    if (
+      other.from.x === m.to.x &&
+      other.from.y === m.to.y &&
+      other.to.x === m.from.x &&
+      other.to.y === m.from.y
+    ) {
       mutate(m, { survived: false, killedBy: null });
       mutate(other, { survived: false, killedBy: null });
     }

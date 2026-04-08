@@ -14,7 +14,7 @@
 // The script itself uses `node:fs` and `node:path` because it runs OUTSIDE the
 // simulation boundary — it's tooling, not simulation code.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 
 const SIM_ROOT = resolve('src/sim');
@@ -58,11 +58,10 @@ function checkFile(file: string): Failure[] {
   // Imports — anchored to start-of-line so we don't match `import`/`from` inside
   // strings or comments.
   const importRegex = /^(?:import|export)\b[^'"\n]*?\bfrom\s+['"]([^'"]+)['"]/gm;
-  let m: RegExpExecArray | null;
-  while ((m = importRegex.exec(text)) !== null) {
-    const spec = m[1];
+  for (const match of text.matchAll(importRegex)) {
+    const spec = match[1];
     if (spec === undefined) continue;
-    const lineIdx = text.slice(0, m.index).split('\n').length;
+    const lineIdx = text.slice(0, match.index ?? 0).split('\n').length;
     if (spec.startsWith('node:')) {
       const allowed = ALLOWED_NODE_IMPORTS.get(file) ?? new Set<string>();
       if (!allowed.has(spec)) {
