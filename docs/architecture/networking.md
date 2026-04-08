@@ -32,6 +32,17 @@ If Trystero's API limits become a problem (custom routing, neighborhood logic), 
 
 Once peers are connected, all game data flows over **WebRTC data channels** in unreliable-unordered mode. UDP-like semantics, no head-of-line blocking, low latency.
 
+### Channel layout (v0.1)
+
+v0.1 negotiates exactly **two** Trystero data channels per peer:
+
+| Label | Reliability | Carries |
+|---|---|---|
+| `ctrl` | reliable, ordered | HELLO, EVICT, STATE_REQUEST, STATE_RESPONSE, KICKED, BYE |
+| `tick` | unreliable, unordered | INPUT, STATE_HASH |
+
+All other channel labels are reserved for future protocol versions. The wire-protocol message types and their channel assignment are defined in [`../protocol/wire-protocol.md`](../protocol/wire-protocol.md).
+
 ### Why WebRTC
 
 - **Direct peer-to-peer.** No relay in the data path. Latency is whatever the underlying internet path is.

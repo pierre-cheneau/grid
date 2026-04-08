@@ -3,6 +3,9 @@
   "version": "0.1.0-dev",
   "private": true,
   "type": "module",
+  "bin": {
+    "grid": "dist/src/cli/grid.js"
+  },
   "engines": {
     "node": ">=22.11.0"
   },
@@ -22,5 +25,9 @@
     "@types/node": "22.10.2",
     "fast-check": "3.23.2",
     "typescript": "5.7.2"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.32.2",
+    "trystero": "^0.23.0"
   }
 }

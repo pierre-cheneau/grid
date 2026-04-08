@@ -139,22 +139,12 @@ The most-senior peer (longest `joined_at`) responds with `STATE_RESPONSE`.
   "from": "corne@thinkpad",
   "to": "newcomer@laptop",
   "tick": 1234,
-  "state": {
-    "config": { "grid_w": 80, "grid_h": 40, "decay_half_life_ticks": 600 },
-    "rng": "<serialized PRNG state>",
-    "players": [
-      { "id": "corne@thinkpad", "x": 12, "y": 5, "dir": "E", "alive": true, "color": [0, 255, 200] },
-      ...
-    ],
-    "cells": [
-      { "x": 11, "y": 5, "type": "trail", "owner": "corne@thinkpad", "age": 14 },
-      ...
-    ]
-  }
+  "state_b64": "<base64 of canonicalBytes(state)>"
 }
 ```
 
-- `state` is the full canonical state at `tick`, serialized. The joiner installs this state and resumes lockstep from `tick + 1`.
+- `state_b64` is the base64 encoding of the canonical byte serialization defined in [`../architecture/determinism.md`](../architecture/determinism.md). This guarantees that the joiner installs a bit-identical state — JSON would lose information for the u64 RNG state and Map iteration order.
+- The joiner installs the decoded state and resumes lockstep from `tick + 1`.
 - For v0.1, full state is sent verbatim. For larger grids in v0.2+, an incremental sync (seed + input log) may replace this.
 
 ### `GOSSIP` — cross-neighborhood summary

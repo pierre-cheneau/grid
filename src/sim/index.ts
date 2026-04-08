@@ -7,6 +7,7 @@
 export { simulateTick } from './tick.js';
 export { hashState } from './hash.js';
 export { canonicalBytes } from './serialize.js';
+export { parseCanonicalBytes } from './deserialize.js';
 export { newRng, cloneRng, nextU32, nextRangeU32, splitmix64 } from './rng.js';
 export { cellKey, parseCellKey, inBounds, applyTurn, DIR_DELTA } from './grid.js';
 export {

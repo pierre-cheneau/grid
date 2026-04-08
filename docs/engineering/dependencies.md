@@ -129,3 +129,10 @@ A quarterly review is recorded in this file with a one-line entry under "Audit h
 ### Audit history
 
 > *No audits yet. First audit will happen after v0.1 ships.*
+
+### Approved runtime dependencies (v0.1)
+
+| Package | Version | Justification |
+|---|---|---|
+| `trystero` | `^0.23.0` | WebRTC + Nostr signaling for the decentralized peer mesh. Mandated by `docs/architecture/networking.md`. Replaces ~2000 lines of WebRTC offer/answer plumbing and Nostr WS handling that we would otherwise vendor. Single import site: `src/net/room.ts`. |
+| `node-datachannel` | `^0.32.2` | WebRTC polyfill for Node. Trystero's `joinRoom` accepts an `rtcPolyfill` option; without one Node 22 has no `RTCPeerConnection`. Native binary, prebuilt for win/linux/mac. Single import site: `src/net/room.ts`. |
