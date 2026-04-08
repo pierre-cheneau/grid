@@ -1,0 +1,26 @@
+{
+  "name": "grid",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.11.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true}))\"",
+    "boundary": "node dist/scripts/check-sim-boundary.js",
+    "test": "npm run build && npm run boundary && node --test \"dist/test/**/*.test.js\"",
+    "test:property": "npm run build && node --test dist/test/sim/property.test.js",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "determinism:hash": "npm run build && node dist/scripts/determinism-hash.js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@types/node": "22.10.2",
+    "fast-check": "3.23.2",
+    "typescript": "5.7.2"
+  }
+}

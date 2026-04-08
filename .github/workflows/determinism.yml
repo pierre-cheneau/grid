@@ -1,0 +1,59 @@
+# Cross-platform determinism gate.
+#
+# This workflow is THE Stage 1 acceptance test: it runs the same fixed scenario on
+# Linux and Windows runners and fails the build if the resulting state hashes differ
+# by even one bit. The compare job is the load-bearing check — green compare = green
+# determinism.
+
+name: determinism
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  hash:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Compute determinism hash
+        shell: bash
+        run: npm run --silent determinism:hash > determinism-hash.txt
+      - name: Show hash
+        shell: bash
+        run: cat determinism-hash.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-${{ matrix.os }}
+          path: determinism-hash.txt
+
+  compare:
+    needs: hash
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hash-ubuntu-latest
+          path: linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: hash-windows-latest
+          path: windows
+      - name: Compare cross-platform hashes
+        shell: bash
+        run: |
+          echo "linux:   $(cat linux/determinism-hash.txt)"
+          echo "windows: $(cat windows/determinism-hash.txt)"
+          diff linux/determinism-hash.txt windows/determinism-hash.txt
+          echo "OK: hashes match across platforms"
