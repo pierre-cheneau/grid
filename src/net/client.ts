@@ -7,6 +7,7 @@
 
 import { type Config, type GridState, type PlayerId, type Turn, hashState } from '../sim/index.js';
 import { MAX_PROTOCOL_FAULTS } from './constants.js';
+import { dbg } from './debug.js';
 import { EvictionTracker } from './evict.js';
 import { HashCheck } from './hashCheck.js';
 import { Lockstep } from './lockstep.js';
@@ -24,7 +25,7 @@ import {
 } from './messages.js';
 import { encodeMessage, parseMessage } from './protocol.js';
 import type { Room, RoomFactory } from './room.js';
-import { buildStateResponse, installSnapshot, pickResponder } from './sync.js';
+import { buildStateResponse, installSnapshot } from './sync.js';
 
 export interface NetIdentity {
   readonly id: string;
@@ -61,6 +62,12 @@ export class NetClient {
   private readonly evictTracker = new EvictionTracker();
   private readonly knownPeers = new Map<string, PeerInfo>();
   private readonly faultCounts = new Map<string, number>();
+  /** sessionId (transport) → playerId (wire-protocol). Populated by HELLO. */
+  private readonly sessionToPlayer = new Map<string, string>();
+  /** playerId → sessionId. Inverse of sessionToPlayer; needed for targeted sends. */
+  private readonly playerToSession = new Map<string, string>();
+  /** Player ids we owe a STATE_RESPONSE to, drained after the next tick advance. */
+  private readonly pendingStateResponses = new Set<string>();
   private room: Room | null = null;
   private lastBroadcastTick = -1;
   private stopped = false;
@@ -102,13 +109,22 @@ export class NetClient {
   }
 
   async start(): Promise<void> {
+    dbg(`client[${this.localId}]: start`);
     this.room = await this.deps.roomFactory(this.cfg.roomKey, this.localId);
-    this.room.onPeerJoin((peerId) => this.onPeerJoin(peerId));
-    this.room.onPeerLeave((peerId) => this.onPeerLeave(peerId));
+    // Order matters: register the data-channel listeners FIRST. Some Room
+    // implementations replay existing peers synchronously when `onPeerJoin` is
+    // registered, which triggers our broadcastHello, which may trigger an immediate
+    // response from the remote via their self-heal — and that response arrives on
+    // ctrl. If onCtrl/onTick aren't registered yet, the response is lost.
     this.room.onCtrl((raw, peerId) => this.onMessage(raw, peerId));
     this.room.onTick((raw, peerId) => this.onMessage(raw, peerId));
-    // Announce ourselves.
+    this.room.onPeerLeave((peerId) => this.onPeerLeave(peerId));
+    this.room.onPeerJoin((peerId) => this.onPeerJoin(peerId));
+    // Announce ourselves to any peers that were already present at createRoom time
+    // but missed the onPeerJoin replay above (because they had no listeners back
+    // then). The remote's self-heal will catch us if our HELLO is itself lost.
     this.broadcastHello();
+    dbg(`client[${this.localId}]: HELLO broadcast`);
   }
 
   async stop(): Promise<void> {
@@ -151,6 +167,9 @@ export class NetClient {
     const newState = result.state;
     // One-shot input semantics: turning is a discrete event. Reset for the next tick.
     this.localTurn = '';
+    // Drain any STATE_RESPONSEs we owe juniors. This must happen AFTER the tick
+    // advance so the response carries the post-join state.
+    this.drainPendingStateResponses();
     for (const cb of this.tickListeners) cb(newState);
 
     // (3) Hash cadence.
@@ -195,6 +214,7 @@ export class NetClient {
       t: 'HELLO',
       from: this.localId,
       color: this.colorFromSeed(id.colorSeed),
+      color_seed: id.colorSeed,
       kind: 'pilot',
       client: 'grid/0.1.0',
       joined_at: id.joinedAt,
@@ -206,44 +226,112 @@ export class NetClient {
     return [seed & 0xff, (seed >> 8) & 0xff, (seed >> 16) & 0xff];
   }
 
-  private onPeerJoin(peerId: string): void {
-    // Trystero peer ids are opaque; we wait for HELLO to learn the wire-protocol id.
-    // Until then, we just count them.
-    void peerId;
+  private sendStateRequest(toPlayerId: string): void {
+    if (this.room === null) return;
+    const sessionId = this.playerToSession.get(toPlayerId);
+    if (sessionId === undefined) {
+      dbg(`client[${this.localId}]: cannot STATE_REQUEST ${toPlayerId} — no session id`);
+      return;
+    }
+    const msg: StateRequestMsg = { v: 1, t: 'STATE_REQUEST', from: this.localId };
+    this.room.sendCtrl(encodeMessage(msg), sessionId);
   }
 
-  private onPeerLeave(peerId: string): void {
-    this.knownPeers.delete(peerId);
-    this.lockstep.removePeer(peerId);
-    this.evictTracker.forget(peerId);
-    for (const cb of this.leaveListeners) cb(peerId);
+  private drainPendingStateResponses(): void {
+    if (this.room === null || this.pendingStateResponses.size === 0) return;
+    const ids = [...this.pendingStateResponses];
+    this.pendingStateResponses.clear();
+    for (const playerId of ids) {
+      const sessionId = this.playerToSession.get(playerId);
+      if (sessionId === undefined) {
+        dbg(`client[${this.localId}]: cannot send STATE_RESPONSE to ${playerId} — no session`);
+        continue;
+      }
+      const resp = buildStateResponse(this.localId, playerId, this.lockstep.currentState);
+      this.room.sendCtrl(encodeMessage(resp), sessionId);
+      dbg(
+        `client[${this.localId}]: sent STATE_RESPONSE to ${playerId} at tick ${this.lockstep.currentTick}`,
+      );
+    }
   }
 
-  private onMessage(raw: string, sender: string): void {
+  private onPeerJoin(sessionId: string): void {
+    dbg(`client[${this.localId}]: transport peer joined session=${sessionId}`);
+    // The transport just told us a new peer is reachable. Re-broadcast our HELLO so
+    // they learn our player id, color, and seniority. (Our initial HELLO at start()
+    // may have been sent before this peer was connected and lost.)
+    this.broadcastHello();
+  }
+
+  private onPeerLeave(sessionId: string): void {
+    dbg(`client[${this.localId}]: transport peer left session=${sessionId}`);
+    const playerId = this.sessionToPlayer.get(sessionId);
+    this.sessionToPlayer.delete(sessionId);
+    if (playerId !== undefined) {
+      this.playerToSession.delete(playerId);
+      this.knownPeers.delete(playerId);
+      this.lockstep.removePeer(playerId);
+      this.evictTracker.forget(playerId);
+      this.pendingStateResponses.delete(playerId);
+      for (const cb of this.leaveListeners) cb(playerId);
+    }
+  }
+
+  private onMessage(raw: string, sessionId: string): void {
     let msg: Message;
     try {
-      msg = parseMessage(raw, sender);
+      msg = parseMessage(raw);
     } catch (e) {
       if (e instanceof ProtocolError) {
-        const n = (this.faultCounts.get(sender) ?? 0) + 1;
-        this.faultCounts.set(sender, n);
-        if (n === MAX_PROTOCOL_FAULTS) {
-          // Cast exactly once at the threshold; further faults from the same peer
-          // are silently ignored to prevent eviction storms.
-          this.castEvict(sender, 'disconnect', this.lockstep.currentTick);
-        }
+        this.recordFault(sessionId, `parse: ${e.message}`);
         return;
       }
       throw e;
     }
-    this.faultCounts.set(sender, 0);
+    // Resolve sender → playerId. HELLO is the only message that can establish a
+    // new mapping; everything else must come from a session whose HELLO we already
+    // saw, AND its `from` must match the registered player id.
+    if (msg.t === 'HELLO') {
+      this.faultCounts.set(sessionId, 0);
+      this.handleHelloFromSession(msg, sessionId);
+      return;
+    }
+    const expectedPlayerId = this.sessionToPlayer.get(sessionId);
+    if (expectedPlayerId === undefined) {
+      this.recordFault(sessionId, `${msg.t} from unknown session (no HELLO yet)`);
+      return;
+    }
+    if (msg.from !== expectedPlayerId) {
+      this.recordFault(
+        sessionId,
+        `${msg.t} from "${msg.from}" but session is registered as "${expectedPlayerId}"`,
+      );
+      return;
+    }
+    this.faultCounts.set(sessionId, 0);
     this.dispatch(msg);
   }
 
+  private recordFault(sessionId: string, reason: string): void {
+    const n = (this.faultCounts.get(sessionId) ?? 0) + 1;
+    this.faultCounts.set(sessionId, n);
+    dbg(`client[${this.localId}]: protocol fault from ${sessionId} (${n}): ${reason}`);
+    if (n === MAX_PROTOCOL_FAULTS) {
+      // Cast exactly once at the threshold. Further faults from the same session
+      // are silently ignored to prevent eviction storms.
+      const playerId = this.sessionToPlayer.get(sessionId);
+      if (playerId !== undefined) {
+        this.castEvict(playerId, 'disconnect', this.lockstep.currentTick);
+      }
+    }
+  }
+
   private dispatch(msg: Message): void {
+    dbg(`client[${this.localId}]: dispatch ${msg.t} from ${msg.from}`);
     switch (msg.t) {
       case 'HELLO':
-        this.handleHello(msg);
+        // HELLO is handled in onMessage before dispatch (it establishes the session
+        // mapping). Reaching here means a duplicate HELLO from a known session — no-op.
         break;
       case 'INPUT':
         this.handleInput(msg);
@@ -270,14 +358,64 @@ export class NetClient {
     }
   }
 
-  private handleHello(msg: HelloMsg): void {
-    if (this.knownPeers.has(msg.from)) return;
+  private handleHelloFromSession(msg: HelloMsg, sessionId: string): void {
+    // (1) Register the bidirectional sessionId↔playerId mapping. This is the only
+    // place where the mapping is created. Subsequent messages from this sessionId
+    // are validated against the registered playerId.
+    const existingPlayer = this.sessionToPlayer.get(sessionId);
+    if (existingPlayer !== undefined && existingPlayer !== msg.from) {
+      // The session is trying to switch player ids — that's a spoof attempt.
+      this.recordFault(sessionId, `HELLO claims "${msg.from}" but session was "${existingPlayer}"`);
+      return;
+    }
+    if (this.knownPeers.has(msg.from)) {
+      // We already know this peer. Idempotent re-broadcast on Trystero onPeerJoin.
+      dbg(`client[${this.localId}]: HELLO from ${msg.from} (already known)`);
+      // Ensure the session mapping is fresh in case the same playerId reconnected.
+      this.sessionToPlayer.set(sessionId, msg.from);
+      this.playerToSession.set(msg.from, sessionId);
+      return;
+    }
+    dbg(
+      `client[${this.localId}]: HELLO from ${msg.from} session=${sessionId} joinedAt=${msg.joined_at}`,
+    );
+    this.sessionToPlayer.set(sessionId, msg.from);
+    this.playerToSession.set(msg.from, sessionId);
     this.knownPeers.set(msg.from, {
       id: msg.from,
       joinedAt: msg.joined_at,
       color: msg.color,
     });
+    // Always add the new peer to the lockstep's expected-input set. The remote
+    // peer is now part of the simulation contract regardless of seniority — the
+    // lockstep must wait for their INPUT each tick instead of defaulting to ''.
     this.lockstep.addPeer(msg.from);
+    // Self-heal: re-broadcast our HELLO so the new peer learns us regardless of any
+    // listener-registration race that may have dropped our initial broadcast. The
+    // remote side ignores duplicates because handleHelloFromSession returns early
+    // when the player is already known.
+    this.broadcastHello();
+    // (2) Decide who is senior. The senior owns the canonical state; the junior
+    // installs a snapshot from the senior on join.
+    const remoteIsSenior =
+      msg.joined_at < this.cfg.identity.joinedAt ||
+      (msg.joined_at === this.cfg.identity.joinedAt && msg.from < this.localId);
+    if (remoteIsSenior) {
+      // We are the junior. Ask the senior for their current state. (We do NOT
+      // queue a JoinRequest — the senior's state will replace ours entirely on
+      // STATE_RESPONSE install.)
+      dbg(`client[${this.localId}]: ${msg.from} is senior; sending STATE_REQUEST`);
+      this.sendStateRequest(msg.from);
+    } else {
+      // We are the senior. Queue a JoinRequest so the junior enters our simulation
+      // on the next tick advance, and remember to send them a STATE_RESPONSE
+      // immediately afterward (so the response carries the post-join state).
+      dbg(
+        `client[${this.localId}]: ${msg.from} is junior; queueing JoinRequest + pending response`,
+      );
+      this.lockstep.queueJoin({ id: msg.from, colorSeed: msg.color_seed });
+      this.pendingStateResponses.add(msg.from);
+    }
     for (const cb of this.joinListeners) cb(msg.from);
   }
 
@@ -303,23 +441,29 @@ export class NetClient {
   }
 
   private handleStateRequest(msg: StateRequestMsg): void {
-    if (this.room === null) return;
-    // Determine the senior responder. Tie-breaker on (joinedAt, id).
-    const candidates = [...this.knownPeers.values()].map((p) => ({
-      id: p.id,
-      joinedAt: p.joinedAt,
-    }));
-    const responder = pickResponder(candidates, this.localId, this.cfg.identity.joinedAt);
-    if (responder !== this.localId) return;
-    const resp = buildStateResponse(this.localId, msg.from, this.lockstep.currentState);
-    this.room.sendCtrl(encodeMessage(resp), msg.from);
+    // The junior is asking us for our state. Queue a deferred response so it carries
+    // the post-tick state (by which time the JoinRequest queued in handleHelloFromSession
+    // has been processed and the junior is in our state.players).
+    if (!this.knownPeers.has(msg.from)) {
+      dbg(`client[${this.localId}]: STATE_REQUEST from unknown ${msg.from} (ignored)`);
+      return;
+    }
+    this.pendingStateResponses.add(msg.from);
+    dbg(`client[${this.localId}]: queued STATE_RESPONSE for ${msg.from}`);
   }
 
   private handleStateResponse(msg: StateResponseMsg): void {
     if (msg.to !== this.localId) return;
     const { state } = installSnapshot(msg);
-    // Reset the lockstep with the installed state.
+    // Reset the lockstep with the installed state. The senior's state already
+    // contains us as a player (because they processed our JoinRequest before sending).
+    dbg(`client[${this.localId}]: installing snapshot from ${msg.from} at tick ${state.tick}`);
     this.lockstep.reset(state);
+    // Repopulate the lockstep's expected-peer set from the snapshot's player map,
+    // since reset() clears it and the seniors are now canonical.
+    for (const playerId of state.players.keys()) {
+      if (playerId !== this.localId) this.lockstep.addPeer(playerId);
+    }
     this.lastBroadcastTick = -1;
   }
 

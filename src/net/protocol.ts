@@ -84,10 +84,17 @@ function expectId(o: Record<string, unknown>, key: string): string {
 }
 
 /**
- * Parse + validate a raw message line. `sender` is the peer id Trystero gives us;
- * the parsed `from` field MUST equal it (anti-spoofing).
+ * Parse + validate a raw message line. Returns a strongly-typed `Message` or throws
+ * `ProtocolError`.
+ *
+ * NOTE on the sender/from namespaces: the wire-protocol `from` field is the user-
+ * facing player id (`USER@HOSTNAME`), and the transport sender id (Trystero peer id)
+ * is an opaque per-session identifier. They live in different namespaces and CANNOT
+ * be compared directly. Spoofing protection is the caller's job: NetClient maintains
+ * a `Map<sessionId, playerId>` populated by HELLO and rejects subsequent messages
+ * whose `from` does not match the registered player id for the sender.
  */
-export function parseMessage(raw: string, sender: string): Message {
+export function parseMessage(raw: string): Message {
   if (typeof raw !== 'string') bad('raw message is not a string');
 
   // Permit oversized messages only if they look like a STATE_RESPONSE; otherwise
@@ -113,7 +120,6 @@ export function parseMessage(raw: string, sender: string): Message {
   const t = o['t'];
   if (!isString(t) || !KNOWN_TYPES.has(t)) bad(`unknown message type ${String(t)}`);
   const from = expectId(o, 'from');
-  if (from !== sender) bad(`from "${from}" does not match sender "${sender}"`);
 
   switch (t as MessageType) {
     case 'HELLO': {
@@ -128,11 +134,16 @@ export function parseMessage(raw: string, sender: string): Message {
       const client = expectString(o, 'client', CLIENT_STR_MAX);
       const joinedAt = o['joined_at'];
       if (!isFiniteInt(joinedAt) || joinedAt < 0) bad('joined_at out of range');
+      const colorSeed = o['color_seed'];
+      if (!isFiniteInt(colorSeed) || colorSeed < 0 || colorSeed > 0xff_ff_ff_ff) {
+        bad('color_seed out of range');
+      }
       const msg: HelloMsg = {
         v: 1,
         t: 'HELLO',
         from,
         color: rgb,
+        color_seed: colorSeed,
         kind: kind as PeerKind,
         client,
         joined_at: joinedAt,

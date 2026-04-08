@@ -14,9 +14,11 @@
 //   - process.on('uncaughtException' | 'unhandledRejection') handlers also clean up
 // Quadruple coverage means a stuck alt-screen is impossible barring a SIGKILL.
 
-import { argv, exit, stdin, stdout } from 'node:process';
+import { createWriteStream } from 'node:fs';
+import { argv, exit, pid, stdin, stdout } from 'node:process';
 import { deriveLocalId } from '../id/identity.js';
 import { TICK_DURATION_MS } from '../net/constants.js';
+import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
 import { createTrysteroRoom } from '../net/room.js';
 import { AnsiWriter, type Viewport, buildFrame, cleanupTerminal } from '../render/index.js';
@@ -28,6 +30,8 @@ interface CliConfig {
   readonly height: number;
   readonly seed: bigint;
   readonly halfLifeTicks: number;
+  readonly name: string | null;
+  readonly debug: boolean;
 }
 
 interface RendererHandle {
@@ -56,6 +60,8 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
     height: opts['height'] ? Number.parseInt(opts['height'], 10) : 32,
     seed: opts['seed'] ? BigInt(opts['seed']) : 0xc0ffee_deadbeefn,
     halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 600,
+    name: opts['name'] ?? null,
+    debug: opts['debug'] === 'true',
   };
 }
 
@@ -162,7 +168,16 @@ function setupKeyboard(client: NetClient, shutdown: () => Promise<void>): void {
 
 async function main(): Promise<void> {
   const cfg = parseArgs(argv.slice(2));
-  const id = deriveLocalId();
+  if (cfg.debug) {
+    const path = `./grid-debug-${pid}.log`;
+    const stream = createWriteStream(path, { flags: 'a' });
+    setDebugLogger((msg) => {
+      stream.write(`${new Date().toISOString()} ${msg}\n`);
+    });
+    process.stderr.write(`grid: debug log → ${path}\n`);
+  }
+  const baseId = deriveLocalId();
+  const id = cfg.name === null ? baseId : { ...baseId, id: `${baseId.id}-${cfg.name}` };
   const client = new NetClient(
     {
       roomKey: cfg.room,

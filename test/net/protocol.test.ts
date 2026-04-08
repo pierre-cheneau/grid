@@ -11,7 +11,7 @@ import { encodeMessage, parseMessage } from '../../src/net/protocol.js';
 const SENDER = 'corne@thinkpad';
 
 function rt(msg: Message): Message {
-  return parseMessage(encodeMessage(msg), msg.from);
+  return parseMessage(encodeMessage(msg));
 }
 
 describe('parseMessage / encodeMessage round-trip', () => {
@@ -21,6 +21,7 @@ describe('parseMessage / encodeMessage round-trip', () => {
       t: 'HELLO',
       from: SENDER,
       color: [10, 200, 30],
+      color_seed: 0xdeadbeef,
       kind: 'pilot',
       client: 'grid/0.1.0',
       joined_at: 1700000000,
@@ -91,51 +92,46 @@ describe('parseMessage / encodeMessage round-trip', () => {
 });
 
 describe('parseMessage rejects bad input', () => {
-  const bad = (raw: string, sender = SENDER, re: RegExp = /ProtocolError/): void => {
-    assert.throws(() => parseMessage(raw, sender), re);
+  const bad = (raw: string, re: RegExp = /ProtocolError/): void => {
+    assert.throws(() => parseMessage(raw), re);
   };
 
   it('rejects invalid JSON', () => bad('not json{'));
   it('rejects array top level', () => bad('[]'));
   it('rejects null top level', () => bad('null'));
   it('rejects unknown protocol version', () =>
-    bad('{"v":2,"t":"BYE","from":"corne@thinkpad"}', SENDER, /protocol version/));
+    bad('{"v":2,"t":"BYE","from":"corne@thinkpad"}', /protocol version/));
   it('rejects unknown type', () =>
-    bad('{"v":1,"t":"GHOST","from":"corne@thinkpad"}', SENDER, /unknown message type/));
-  it('rejects spoofed from', () =>
-    bad('{"v":1,"t":"BYE","from":"corne@thinkpad"}', 'evil@box', /does not match sender/));
-  it('rejects bad id format', () =>
-    bad('{"v":1,"t":"BYE","from":"no_at_sign"}', 'no_at_sign', /not a valid id/));
+    bad('{"v":1,"t":"GHOST","from":"corne@thinkpad"}', /unknown message type/));
+  it('rejects bad id format', () => bad('{"v":1,"t":"BYE","from":"no_at_sign"}', /not a valid id/));
   it('rejects INPUT with bad tick', () =>
-    bad('{"v":1,"t":"INPUT","from":"corne@thinkpad","tick":-1,"i":""}', SENDER, /tick.*range/));
+    bad('{"v":1,"t":"INPUT","from":"corne@thinkpad","tick":-1,"i":""}', /tick.*range/));
   it('rejects INPUT with bad turn', () =>
-    bad('{"v":1,"t":"INPUT","from":"corne@thinkpad","tick":1,"i":"Z"}', SENDER, /invalid turn/));
+    bad('{"v":1,"t":"INPUT","from":"corne@thinkpad","tick":1,"i":"Z"}', /invalid turn/));
   it('rejects STATE_HASH with wrong-length hash', () =>
-    bad(
-      '{"v":1,"t":"STATE_HASH","from":"corne@thinkpad","tick":30,"h":"abc"}',
-      SENDER,
-      /invalid hash/,
-    ));
+    bad('{"v":1,"t":"STATE_HASH","from":"corne@thinkpad","tick":30,"h":"abc"}', /invalid hash/));
   it('rejects HELLO with bad color tuple', () =>
     bad(
-      '{"v":1,"t":"HELLO","from":"corne@thinkpad","color":[1,2],"kind":"pilot","client":"grid","joined_at":1}',
-      SENDER,
+      '{"v":1,"t":"HELLO","from":"corne@thinkpad","color":[1,2],"color_seed":1,"kind":"pilot","client":"grid","joined_at":1}',
       /color must be a 3-tuple/,
+    ));
+  it('rejects HELLO missing color_seed', () =>
+    bad(
+      '{"v":1,"t":"HELLO","from":"corne@thinkpad","color":[1,2,3],"kind":"pilot","client":"grid","joined_at":1}',
+      /color_seed/,
     ));
   it('rejects EVICT with bad reason', () =>
     bad(
       '{"v":1,"t":"EVICT","from":"corne@thinkpad","target":"marie@archbox","reason":"because","tick":1}',
-      SENDER,
       /invalid reason/,
     ));
   it('rejects oversized non-snapshot message', () => {
     const big = `{"v":1,"t":"BYE","from":"corne@thinkpad","x":"${'A'.repeat(20000)}"}`;
-    bad(big, SENDER, /oversized message is not a snapshot/);
+    bad(big, /oversized message is not a snapshot/);
   });
   it('rejects STATE_RESPONSE with non-base64 payload', () =>
     bad(
       '{"v":1,"t":"STATE_RESPONSE","from":"corne@thinkpad","to":"newcomer@laptop","tick":1,"state_b64":"!!!"}',
-      SENDER,
       /not base64/,
     ));
 });
@@ -143,7 +139,7 @@ describe('parseMessage rejects bad input', () => {
 describe('ProtocolError', () => {
   it('is the thrown class', () => {
     try {
-      parseMessage('not json', SENDER);
+      parseMessage('not json');
     } catch (e) {
       assert.ok(e instanceof ProtocolError);
       return;

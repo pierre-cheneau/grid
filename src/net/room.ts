@@ -14,6 +14,7 @@
 // for v0.1. We can revisit if bandwidth pressure shows up.
 
 import { CHANNEL_CTRL, CHANNEL_TICK } from './constants.js';
+import { dbg } from './debug.js';
 
 export interface Room {
   onPeerJoin(cb: (peerId: string) => void): void;
@@ -33,10 +34,12 @@ export type RoomFactory = (roomKey: string, localPeerId: string) => Promise<Room
  * Default factory: opens a real Trystero/Nostr room. Imported lazily so that test
  * code that injects a MockRoom doesn't pay the trystero load cost.
  */
-export const createTrysteroRoom: RoomFactory = async (roomKey, _localPeerId) => {
+export const createTrysteroRoom: RoomFactory = async (roomKey, localPeerId) => {
+  dbg(`room: opening trystero/nostr room "${roomKey}" as ${localPeerId}`);
   // Lazy import keeps tests isolated and lets bundlers tree-shake. We import the
   // node-datachannel polyfill the same way: only when a real room is being created.
   const { joinRoom, selfId } = await import('trystero/nostr');
+  dbg(`room: trystero loaded; selfId=${String(selfId)}`);
   const polyfillNs = (await import('node-datachannel/polyfill')) as unknown as {
     RTCPeerConnection?: unknown;
     default?: { RTCPeerConnection?: unknown };
@@ -45,24 +48,47 @@ export const createTrysteroRoom: RoomFactory = async (roomKey, _localPeerId) => 
   if (polyfillCtor === undefined) {
     throw new Error('node-datachannel polyfill missing RTCPeerConnection');
   }
+  dbg('room: node-datachannel polyfill loaded');
   // biome-ignore lint/suspicious/noExplicitAny: trystero accepts the polyfill ctor
   const room = joinRoom({ appId: 'grid', rtcPolyfill: polyfillCtor as any }, roomKey);
   const [sendCtrl, recvCtrl] = room.makeAction<string>(CHANNEL_CTRL);
   const [sendTick, recvTick] = room.makeAction<string>(CHANNEL_TICK);
+  dbg('room: joinRoom returned; channels ctrl/tick negotiated');
 
   void selfId; // referenced to silence the unused warning; consumed by Trystero internally
 
   const adapter: Room = {
-    onPeerJoin: (cb) => room.onPeerJoin((peerId) => cb(peerId)),
-    onPeerLeave: (cb) => room.onPeerLeave((peerId) => cb(peerId)),
-    onCtrl: (cb) => recvCtrl((data, peerId) => cb(String(data), peerId)),
-    onTick: (cb) => recvTick((data, peerId) => cb(String(data), peerId)),
+    onPeerJoin: (cb) =>
+      room.onPeerJoin((peerId) => {
+        dbg(`room: trystero onPeerJoin ${peerId}`);
+        cb(peerId);
+      }),
+    onPeerLeave: (cb) =>
+      room.onPeerLeave((peerId) => {
+        dbg(`room: trystero onPeerLeave ${peerId}`);
+        cb(peerId);
+      }),
+    onCtrl: (cb) =>
+      recvCtrl((data, peerId) => {
+        dbg(`room: ctrl recv from ${peerId}: ${String(data).slice(0, 100)}`);
+        cb(String(data), peerId);
+      }),
+    onTick: (cb) =>
+      recvTick((data, peerId) => {
+        dbg(`room: tick recv from ${peerId}: ${String(data).slice(0, 100)}`);
+        cb(String(data), peerId);
+      }),
     sendCtrl: (raw, to) => {
+      dbg(`room: ctrl send ${to ?? 'broadcast'}: ${raw.slice(0, 100)}`);
       if (to !== undefined) sendCtrl(raw, to);
       else sendCtrl(raw);
     },
-    sendTick: (raw) => sendTick(raw),
+    sendTick: (raw) => {
+      dbg(`room: tick send: ${raw.slice(0, 100)}`);
+      sendTick(raw);
+    },
     leave: async () => {
+      dbg('room: leaving');
       await room.leave();
     },
   };

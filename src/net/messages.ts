@@ -14,6 +14,10 @@ export interface HelloMsg {
   readonly t: 'HELLO';
   readonly from: string;
   readonly color: readonly [number, number, number];
+  /** u32 colorSeed used by the simulation when injecting this peer as a Player.
+   *  Required for deterministic spawn placement after a JoinRequest. The
+   *  `color` tuple is for the renderer; this number is for the simulation. */
+  readonly color_seed: number;
   readonly kind: PeerKind;
   readonly client: string;
   readonly joined_at: number;
