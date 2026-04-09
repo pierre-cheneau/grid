@@ -2,7 +2,7 @@
 // All higher layers (NetClient, lockstep, sync, etc.) talk to the `Room` interface.
 // Tests inject a MockRoom that implements the same interface without any real WebRTC.
 
-import { CHANNEL_CTRL, CHANNEL_TICK, REJOIN_INTERVAL_MS } from './constants.js';
+import { CHANNEL_CTRL, CHANNEL_TICK, DEFAULT_RELAYS, REJOIN_INTERVAL_MS } from './constants.js';
 import { dbg } from './debug.js';
 
 export interface Room {
@@ -24,17 +24,6 @@ export type RoomFactory = (
   localPeerId: string,
   opts?: RoomFactoryOpts,
 ) => Promise<Room>;
-
-// Default relay list. Each relay must: (1) accept WebSocket connections, (2) accept
-// Trystero's custom event kind 22766, (3) not require paid signup or web-of-trust,
-// (4) not aggressively rate-limit. See docs/architecture/networking.md.
-const DEFAULT_RELAYS = [
-  'wss://relay.primal.net',
-  'wss://relay.notoshi.win',
-  'wss://relay.mostr.pub',
-  'wss://relay.nostr.net',
-  'wss://nostr.fmt.wiz.biz',
-];
 
 type Listener = (raw: string, peerId: string) => void;
 type PeerCb = (peerId: string) => void;

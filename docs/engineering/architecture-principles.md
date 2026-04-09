@@ -49,10 +49,11 @@ GRID is organized in concentric layers. **Dependencies point inward.** Outer lay
 |---|---|---|
 | `src/sim/` | The deterministic game simulation. Pure functions, no I/O. | Nothing inside `src/`. |
 | `src/id/` | Identity derivation: USER@HOSTNAME, color hashing, identity cache. | `src/sim/` (for type definitions only). |
-| `src/persist/` | Cell snapshot encoding/decoding, local file backup (`~/.grid/`), Nostr snapshot publishing/fetching, hash chain computation, compression. | `src/sim/`, `src/id/`. |
+| `src/persist/` | Cell snapshot encoding/decoding, local file backup (`~/.grid/`), hash chain computation, compression. | `src/sim/`, `src/id/`. |
 | `src/render/` | Terminal rendering, box-drawing, ANSI color, intro animation. | `src/sim/`, `src/id/`. |
 | `src/ui/` | Keyboard input, raw mode, exit handling, the spectator overlay. | `src/sim/`, `src/render/`. |
-| `src/net/` | P2P networking, Trystero, Nostr signaling, lockstep transport, peer eviction. | `src/sim/`, `src/id/`, `src/persist/`. |
+| `src/net/` | P2P networking, Nostr relay pool, WebRTC signaling, spatial tiles, proximity topology, lockstep transport, peer eviction, Nostr persistence (cell snapshots, chain attestation, world config). | `src/sim/`, `src/id/`, `src/persist/`. |
+| `src/daemon/` | Daemon subprocess bridge (`--deploy`), in-process worker model, handshake/tick loop, forge command. | `src/sim/`, `src/net/`. |
 | `src/cli/` | Top-level wiring: argument parsing, environment, the `main()` entry, signal handling. | All of the above. |
 
 ### Why this shape

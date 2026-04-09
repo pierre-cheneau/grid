@@ -19,11 +19,12 @@ For the full concept, read [`docs/concept/vision.md`](docs/concept/vision.md). F
 ├── package.json               ← npm package definition
 ├── src/
 │   ├── sim/                   ← THE SIMULATION. Pure, deterministic, no I/O. See determinism-rules.md.
-│   ├── net/                   ← P2P networking, Trystero, Nostr signaling, lockstep transport
+│   ├── net/                   ← P2P networking, Nostr relay pool, WebRTC signaling, tiles, topology, lockstep
 │   ├── render/                ← terminal rendering, box-drawing, ANSI color
 │   ├── ui/                    ← keyboard input, intro animation, exit epitaph
-│   ├── id/                    ← identity derivation (USER@HOSTNAME, color hash)
-│   ├── persist/               ← cell snapshots, Nostr persistence, local backup, hash chain
+│   ├── id/                    ← identity derivation (USER@HOSTNAME, color hash, Nostr keypair)
+│   ├── persist/               ← cell snapshots, local backup, hash chain, compression
+│   ├── daemon/                ← daemon subprocess bridge, in-process worker, forge command
 │   └── cli/                   ← `npx grid` entry point, argument parsing, top-level wiring
 ├── test/
 │   ├── sim/                   ← determinism tests, property-based tests

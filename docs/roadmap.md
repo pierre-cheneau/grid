@@ -222,33 +222,120 @@ Even a well-designed game can be ruined by the wrong launch story. If GRID gets 
 
 The single biggest reason small games die is that the author loses interest before the game finds its audience. Mitigation: scope v0.1 small enough to ship while still motivated. The smallest possible version that contains the soul. If you get to stage 4 and stop, you still have a beautiful artifact.
 
-## After v0.1
+## v0.2 — the fully decentralized living world
 
-Rough sketch of v0.2 priorities, in order:
+v0.1 proved the soul. v0.2 proves the ecosystem: the world persists via public Nostr relays, daemons give it a heartbeat, and the architecture scales from 10 to 100,000 players without rewrites. The guiding principle: **per-player resource consumption is constant regardless of total population.**
 
-1. The remaining four crowns (Reaper, Architect, Catalyst, Mayfly).
-2. The daemon subprocess bridge (`--deploy`).
-3. **The `npx grid forge` LLM authoring command** (BYOK, sandbox, refinement). Ships alongside the daemon bridge — they are useless without each other. See [`design/forge.md`](design/forge.md).
-4. The public archive in a git repo.
-5. Replay sharing.
-6. Cross-neighborhood gossip (CRDT-based summary data between siblings).
-7. TURN fallback.
-8. The `uvx grid` Python port.
+### v0.2 build stages
 
-But this list is provisional. v0.2 priorities should be set by **what real players ask for after v0.1 ships**, not by what the spec predicts. Listen to the first hundred players. They will tell you what GRID actually is.
+#### Stage 8: Cryptographic identity + Nostr foundation
+
+The platform everything else builds on.
+
+- Extend `~/.grid/identity.json` with a secp256k1 Nostr keypair (secret key + derived pubkey). Generated once via `@noble/curves` (comes transitively via `nostr-tools`).
+- Add `nostr-tools` as a runtime dependency (replaces Trystero's Nostr signaling role and adds persistence capabilities). Single relay pool (`SimplePool`) for all Nostr interactions.
+- Implement event signing (Schnorr/BIP-340) for all outbound Nostr events.
+- Implement event verification for all inbound Nostr events.
+- Wire the relay pool lifecycle (connect on start, reconnect on drop, close on shutdown).
+
+**Done when:** the identity system generates crypto keys and can publish/verify signed Nostr events to public relays.
+
+#### Stage 9: Tile system + Nostr persistence
+
+The world remembers across peer-free gaps.
+
+- Implement tile abstraction: world divided into 256×256 tiles, `tileX = floor(worldX/256)`, Nostr topic per tile (`grid:YYYY-MM-DD:t:X-Y`).
+- Publish signed, compressed cell snapshots to Nostr per tile every 30s (kind 30079, parameterized replaceable — old snapshots auto-replace on relay).
+- Subscribe to viewport tiles + adjacent tiles for prefetching. CRDT merge incoming snapshots (union, latest tick wins per position).
+- Cold start from Nostr: fetch latest snapshots for viewport tiles → verify signatures → CRDT merge → time-decay → play.
+- Publish chain attestations to Nostr (kind 22770). Multi-signer verification on cold start.
+- Publish world config events (kind 30078, daily, deterministic).
+- Tile anchor election: longest-connected peer per tile publishes aggregated snapshots.
+
+At current scale (250×250 world), there is exactly 1 tile. All tile code runs but trivially. When the world grows, multi-tile activates without code changes.
+
+**Done when:** a player can quit, wait 5 minutes, rejoin, and see the decayed remnants of their previous session — reconstructed from Nostr, not local files.
+
+#### Stage 10: Proximity topology + dynamic lockstep
+
+The room-less architecture. Replace Trystero with direct Nostr signaling + proximity-based WebRTC connections.
+
+- Implement WebRTC SDP exchange via Nostr ephemeral events (replaces Trystero's signaling).
+- Implement proximity-based connection manager: players within ~30 cells form WebRTC lockstep connections; players who move apart disconnect. Connection budget: ~6 lockstep + ~10 gossip.
+- Implement gossip overlay: peers exchange position/direction over WebRTC data channels, forward known positions with TTL to gossip neighbors. Discovers peers beyond direct connections.
+- Refactor `NetClient` to manage a `Map<PlayerId, PeerConnection>` instead of a single `Room`.
+- Remove Trystero dependency. The `Room` interface becomes `PeerTransport` (single peer-to-peer connection with ctrl/tick channels).
+- Remove `trystero` from package.json.
+
+**Done when:** two players in separate terminals see each other via dynamic proximity connection, with no concept of "rooms."
+
+#### Stage 11: Daemon bridge + forge
+
+The living world's heartbeat. Independent of the networking refactor.
+
+- Implement subprocess model (`--deploy`): spawn child process, pipe JSON stdin/stdout, translate CMD messages into lockstep inputs.
+- Implement in-process worker model (`--inprocess`): `worker_threads`, virtual stdio over `MessageChannel`.
+- Implement handshake (HELLO → HELLO_ACK, 1s timeout), tick loop (TICK → CMD, 50ms budget), error handling (10 consecutive errors → eviction), 4 KiB source cap.
+- Implement `npx grid forge "..."`: provider abstraction (ANTHROPIC/OPENAI/GROQ/OLLAMA), prompt assembly from AGENTS.md, sandbox runner (60s private sim), refinement flow (`--refine`, `--minimal`).
+
+**Done when:** `npx grid --deploy ./wallhugger.js` runs a daemon in the live grid. `npx grid forge "a defensive bot"` produces, tests, and saves a daemon.
+
+#### Stage 12: Remaining crowns + relay federation + polish
+
+- Implement Architect crown (cell-tick area integral per player per tick).
+- Implement Catalyst crown (direct causality: who placed the killing trail. Transitive chains deferred to v0.3).
+- Implement Minimalist crown (daemon-only: smallest source that placed top 3 in any other crown).
+- Add relay federation config: world config event includes optional relay map for tile-range → relay routing.
+- Scale world size formula: `diameter = clamp(60, floor(20 * sqrt(peak)), 20000)`.
+- Ship 3-5 seed daemons in `examples/daemons/`. Add `--seed` flag to auto-launch them in empty grids.
+- Polish: README, npm publish, cross-platform QA.
+
+**Done when:** v0.2 is shipped.
+
+### v0.2 architecture summary
+
+Two layers replace rooms:
+
+1. **The cell layer** (CRDT, Nostr-propagated): cells are a Grow-Only Set with TTL. They merge without consensus. Propagation via signed Nostr events, sharded by spatial tile.
+2. **The interaction layer** (WebRTC, proximity-based): players within collision range form temporary lockstep connections. Dynamic, forms and dissolves as players move.
+
+Scaling is additive — each transition is a config change, not a rewrite:
+
+| Scale | World size | Tiles | Discovery | What changes |
+|-------|-----------|-------|-----------|-------------|
+| 10 | 250×250 | 1 | Nostr presence | Nothing |
+| 100 | 250×250 | 1 | Nostr presence | Nothing |
+| 1,000 | 632×316 | 6 | Nostr presence | World size config |
+| 10,000 | 2000×1000 | 32 | WebRTC gossip overlay | Add gossip module |
+| 100,000 | 6320×3160 | 325 | WebRTC gossip + relay federation | Relay map config |
+
+### v0.2 dependency changes
+
+| Action | Package | Justification |
+|--------|---------|---------------|
+| Add | `nostr-tools` | Nostr protocol: events, signing, relay pool. Replaces Trystero's signaling and adds persistence. Brings `@noble/curves` transitively for Schnorr signatures. |
+| Remove | `trystero` | Room abstraction is a liability in the proximity-based topology. Replaced by `nostr-tools` for signaling + `node-datachannel` for WebRTC. |
+| Keep | `node-datachannel` | WebRTC polyfill for Node. Still needed for direct peer connections. |
 
 ### Discovery scaling ladder
 
-The discovery layer scales incrementally without rewrites. Each step is additive — the `Room` abstraction in `src/net/room.ts` isolates the discovery mechanism from all game logic.
+The discovery layer scales incrementally without rewrites. Each step is additive — the spatial tile abstraction isolates the discovery mechanism from all game logic.
 
 | Version | Discovery mechanism | Capacity |
 |---|---|---|
-| **v0.1** | 5 pinned Nostr relays + `--relay` override | ~50 concurrent players, ~8 neighborhoods |
-| **v0.2** | + relay sharding by topic prefix + gossip heartbeats between siblings | ~500 players |
-| **v0.3** | + DHT discovery (Kademlia via libp2p); Nostr relays become optional bootstrap | Thousands+ |
+| **v0.1** | 5 pinned Nostr relays + Trystero rooms | ~50 concurrent players, ~8 neighborhoods |
+| **v0.2** | Nostr presence + proximity-based WebRTC, tile-sharded topics | ~500 players |
+| **v0.2+** | + WebRTC gossip overlay for presence at density | ~10,000 players |
+| **v0.2+** | + relay federation (tile-range → relay mapping) | ~100,000 players |
+| **v0.3** | + DHT discovery (Kademlia via libp2p); Nostr relays become optional bootstrap | Unlimited |
 
 At every tier, GRID authors operate zero infrastructure. Nostr relays are third-party; DHT bootstrap nodes can be community-run. The `--relay` flag ensures players are never locked out.
 
-### Dynamic neighborhood meshing
+### The room-less topology (v0.2)
 
-The neighborhood lifecycle (create/grow/split/merge/destroy from the networking spec) is designed for fully decentralized coordination. The key property: **all peers independently run the same deterministic algorithm on the same state**, so they arrive at the same split/merge decision without a coordinator — identical to how `simulateTick` produces identical results on every peer. The canonical byte serialization (`canonicalBytes`) is the universal state transfer format for migration between neighborhoods.
+v0.1 uses fixed rooms (Trystero, 6-peer mesh, shared lockstep). v0.2 eliminates rooms entirely:
+
+- **Tiles** route cell state. The world is divided into 256×256 tiles. Each tile has a Nostr topic. Players subscribe to tiles that overlap their viewport. Cell events flow through Nostr as a CRDT.
+- **Proximity** routes player interactions. Players within ~30 cells form direct WebRTC connections for real-time lockstep. When they move apart, the connection dissolves.
+
+There is no concept of "the room you're in." There is only the tiles you're subscribed to (for cells) and the peers you're connected to (for real-time interaction). Both emerge from your position, not from an assignment.

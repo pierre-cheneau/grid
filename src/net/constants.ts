@@ -65,3 +65,14 @@ export const REJOIN_INTERVAL_MS = 10_000;
 /** Trystero channel labels. */
 export const CHANNEL_CTRL = 'ctrl' as const;
 export const CHANNEL_TICK = 'tick' as const;
+
+/** Default Nostr relay list. Used for both Trystero signaling (v0.1) and
+ *  NostrPool persistence/signaling (v0.2). Each relay must accept WebSocket
+ *  connections, accept custom event kinds, and not require paid signup. */
+export const DEFAULT_RELAYS: readonly string[] = [
+  'wss://relay.primal.net',
+  'wss://relay.notoshi.win',
+  'wss://relay.mostr.pub',
+  'wss://relay.nostr.net',
+  'wss://nostr.fmt.wiz.biz',
+];

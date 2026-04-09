@@ -11,33 +11,60 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { getPublicKey } from 'nostr-tools/pure';
 import type { LocalIdentity } from './identity.js';
-import { deriveLocalId } from './identity.js';
+import { deriveLocalId, generateNostrKeypair } from './identity.js';
 
 interface CacheData {
   readonly id: string;
   readonly colorSeed: number;
+  readonly nostrSeckey: string; // hex-encoded
+  readonly nostrPubkey: string; // hex-encoded
 }
 
 function defaultCacheDir(): string {
   return join(homedir(), '.grid');
 }
 
-async function readCache(dir: string): Promise<CacheData | null> {
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** Partial cache from v0.1 (no keypair). */
+interface LegacyCacheData {
+  readonly id: string;
+  readonly colorSeed: number;
+}
+
+async function readCache(dir: string): Promise<CacheData | LegacyCacheData | null> {
   try {
     const raw = await readFile(join(dir, 'identity.json'), 'utf8');
     const parsed: unknown = JSON.parse(raw);
     if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'id' in parsed &&
-      'colorSeed' in parsed &&
-      typeof (parsed as CacheData).id === 'string' &&
-      typeof (parsed as CacheData).colorSeed === 'number'
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('id' in parsed) ||
+      !('colorSeed' in parsed) ||
+      typeof (parsed as LegacyCacheData).id !== 'string' ||
+      typeof (parsed as LegacyCacheData).colorSeed !== 'number'
     ) {
-      return { id: (parsed as CacheData).id, colorSeed: (parsed as CacheData).colorSeed };
+      return null;
     }
-    return null;
+    const obj = parsed as Record<string, unknown>;
+    // Full v0.2 cache with valid keypair
+    if (
+      typeof obj['nostrSeckey'] === 'string' &&
+      typeof obj['nostrPubkey'] === 'string' &&
+      HEX64.test(obj['nostrSeckey']) &&
+      HEX64.test(obj['nostrPubkey'])
+    ) {
+      return {
+        id: obj['id'] as string,
+        colorSeed: obj['colorSeed'] as number,
+        nostrSeckey: obj['nostrSeckey'],
+        nostrPubkey: obj['nostrPubkey'],
+      };
+    }
+    // v0.1 cache without keypair — will be migrated
+    return { id: obj['id'] as string, colorSeed: obj['colorSeed'] as number };
   } catch {
     return null;
   }
@@ -63,11 +90,45 @@ export async function resolveIdentity(
 ): Promise<LocalIdentity> {
   const cached = await readCache(cacheDir);
   if (cached !== null) {
-    return { id: cached.id, colorSeed: cached.colorSeed, joinedAt: Math.floor(now() / 1000) };
+    const joinedAt = Math.floor(now() / 1000);
+    // Full v0.2 cache — verify seckey↔pubkey consistency before trusting
+    if ('nostrSeckey' in cached) {
+      const seckey = new Uint8Array(Buffer.from(cached.nostrSeckey, 'hex'));
+      const derivedPubkey = getPublicKey(seckey);
+      if (derivedPubkey === cached.nostrPubkey) {
+        return {
+          id: cached.id,
+          colorSeed: cached.colorSeed,
+          joinedAt,
+          nostrSeckey: seckey,
+          nostrPubkey: cached.nostrPubkey,
+        };
+      }
+      // Mismatched keypair — regenerate (cache was hand-edited or corrupted)
+    }
+    // v0.1 cache — migrate by generating keypair
+    const { seckey, pubkey } = generateNostrKeypair();
+    const full: CacheData = {
+      id: cached.id,
+      colorSeed: cached.colorSeed,
+      nostrSeckey: Buffer.from(seckey).toString('hex'),
+      nostrPubkey: pubkey,
+    };
+    await writeCache(cacheDir, full).catch(() => {});
+    return {
+      id: cached.id,
+      colorSeed: cached.colorSeed,
+      joinedAt,
+      nostrSeckey: seckey,
+      nostrPubkey: pubkey,
+    };
   }
   const fresh = deriveLocalId(now);
-  await writeCache(cacheDir, { id: fresh.id, colorSeed: fresh.colorSeed }).catch(() => {
-    // Best-effort cache write. If the dir is read-only, we still play.
-  });
+  await writeCache(cacheDir, {
+    id: fresh.id,
+    colorSeed: fresh.colorSeed,
+    nostrSeckey: Buffer.from(fresh.nostrSeckey).toString('hex'),
+    nostrPubkey: fresh.nostrPubkey,
+  }).catch(() => {});
   return fresh;
 }

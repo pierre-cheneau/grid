@@ -134,5 +134,12 @@ A quarterly review is recorded in this file with a one-line entry under "Audit h
 
 | Package | Version | Justification |
 |---|---|---|
-| `trystero` | `^0.23.0` | WebRTC + Nostr signaling for the decentralized peer mesh. Mandated by `docs/architecture/networking.md`. Replaces ~2000 lines of WebRTC offer/answer plumbing and Nostr WS handling that we would otherwise vendor. Single import site: `src/net/room.ts`. |
-| `node-datachannel` | `^0.32.2` | WebRTC polyfill for Node. Trystero's `joinRoom` accepts an `rtcPolyfill` option; without one Node 22 has no `RTCPeerConnection`. Native binary, prebuilt for win/linux/mac. Single import site: `src/net/room.ts`. |
+| `trystero` | `^0.23.0` | WebRTC + Nostr signaling for the decentralized peer mesh. Replaces ~2000 lines of WebRTC offer/answer plumbing and Nostr WS handling. Single import site: `src/net/room.ts`. **Removed in v0.2** — replaced by `nostr-tools` for signaling + direct `node-datachannel` for WebRTC. |
+| `node-datachannel` | `^0.32.2` | WebRTC polyfill for Node. Native binary, prebuilt for win/linux/mac. Single import site: `src/net/room.ts` (v0.1), `src/net/signaling.ts` (v0.2). |
+
+### Approved runtime dependencies (v0.2)
+
+| Package | Version | Justification |
+|---|---|---|
+| `nostr-tools` | TBD | Nostr protocol: event creation, Schnorr signing/verification, relay pool management, subscription filters. Replaces Trystero's Nostr signaling AND adds persistence capabilities (cell snapshots, chain attestations, world config, presence). Brings `@noble/curves` transitively for secp256k1 Schnorr signatures (BIP-340). Canonical Nostr library, actively maintained, used by every Nostr client. Fallback: hand-roll Nostr event creation + WebSocket relay management (~500 LOC of security-critical protocol code). |
+| `node-datachannel` | `^0.32.2` | Retained from v0.1. WebRTC polyfill for Node. Used directly for `RTCPeerConnection` creation in the proximity-based topology (no longer passed through Trystero). |

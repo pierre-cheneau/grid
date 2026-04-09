@@ -36,21 +36,22 @@ Nostr relays are the **lightest, most replaceable** form of this seed infrastruc
 
 The meaningful question is not "is there infrastructure?" (there always is), but "can any single entity kill it, and can anyone provide it?" Nostr meets both tests. GRID's decentralization is genuine.
 
-**Scaling path for discovery beyond v0.1:**
+**Scaling path for discovery:**
 
 | Version | Discovery mechanism | Scales to |
 |---|---|---|
-| v0.1 | 5 pinned Nostr relays + `--relay` override | ~50 concurrent players, ~8 neighborhoods |
-| v0.2 | + relay sharding by topic + gossip between siblings | ~500 players |
-| v0.3 | + DHT discovery (Kademlia via libp2p), relays become optional | Thousands+ |
+| v0.1 | 5 pinned Nostr relays + Trystero rooms | ~50 concurrent players, ~8 neighborhoods |
+| v0.2 | `nostr-tools` signaling + proximity WebRTC, tile-sharded Nostr topics | ~10,000 players |
+| v0.2+ | + relay federation (tile-range → relay mapping in world config) | ~100,000 players |
+| v0.3 | + DHT discovery (Kademlia via libp2p), relays become optional | Unlimited |
 
-Each step is additive — no rewrite needed. The `Room` abstraction in `src/net/room.ts` isolates the discovery layer from the game logic so the underlying mechanism can change without touching the simulation, renderer, or CLI.
+Each step is additive — no rewrite needed. The tile and topology abstractions isolate the discovery layer from the game logic so the underlying mechanism can change without touching the simulation, renderer, or CLI.
 
-### Why not Trystero
+### Trystero (v0.1 only)
 
-[Trystero](https://github.com/dmotz/trystero) is the obvious off-the-shelf library for this and is genuinely excellent. **GRID v0.1 should use Trystero with the Nostr strategy** — there is no reason to reinvent the signaling layer when a battle-tested library exists. The implementation should be: `import { joinRoom } from 'trystero/nostr'` and let Trystero handle the SDP/ICE dance. The above paragraphs describe the *underlying mechanism*; the *implementation* is "use Trystero with the Nostr strategy and configure the room key as `grid:YYYY-MM-DD-UTC`."
+[Trystero](https://github.com/dmotz/trystero) is used in v0.1 for WebRTC signaling via Nostr. It provides room-scoped peer discovery and WebRTC connection management.
 
-If Trystero's API limits become a problem (custom routing, neighborhood logic), the fallback is to drop to raw Nostr-WS, which is also straightforward.
+**v0.2 replaces Trystero** with direct `nostr-tools` signaling + `node-datachannel` WebRTC. The reason: Trystero's room abstraction forces a fixed-membership mesh topology. v0.2's proximity-based topology requires any-to-any connections that form and dissolve dynamically based on spatial proximity. `nostr-tools` is already required for the persistence layer, so using it for signaling too eliminates a dependency while gaining full topology control.
 
 ## Transport: WebRTC mesh
 
@@ -104,44 +105,37 @@ This cap is the load-bearing reason GRID's architecture works without a server. 
 
 The cap is not a limitation; it is the *property that makes the design work*.
 
-## Neighborhoods
+## Neighborhoods (v0.1) → Proximity topology (v0.2)
 
-A **neighborhood** is a 6-peer fully-meshed cluster within today's grid. The grid is logically one shared world, but physically partitioned into many neighborhoods that interconnect via gossip.
+### v0.1: Fixed neighborhoods
 
-### Local interactions
+v0.1 uses a **neighborhood** model: a 6-peer fully-meshed cluster within today's grid. All peers in a neighborhood share the same lockstep simulation. Neighborhoods are isolated — cross-neighborhood interactions are limited to summary gossip.
 
-Within a neighborhood:
+### v0.2: Room-less proximity topology
 
-- All cycles fight in real time via lockstep simulation.
-- All trails, kills, structures are immediately visible.
-- Latency is direct peer-to-peer (typically <100ms).
-- The crown contributions of all 6 peers are computed locally.
+v0.2 eliminates neighborhoods entirely. Two independent systems replace them:
 
-### Cross-neighborhood interactions
+**1. Spatial tiles (cell state routing).** The world is divided into 256×256 fixed-size tiles. Each tile has its own Nostr topic for cell events. A player subscribes to the tiles that overlap their viewport plus adjacent tiles for prefetching. Cell state is a CRDT (Grow-Only Set with TTL) that merges without consensus. Tiles are for **cell routing**, not player grouping.
 
-Between neighborhoods:
+**2. Proximity-based lockstep (player interaction).** Players within interaction range (~30 cells) form direct WebRTC connections and run lockstep for collision resolution. When they move apart, the connection dissolves. Each player can maintain up to ~6 lockstep + ~10 gossip connections. Players outside interaction range see each other's trails via the cell CRDT but do not need real-time input synchronization.
 
-- Crown totals, decay clocks, and global recap data are *gossiped* between neighborhoods via a slower, eventually-consistent channel (a separate Nostr topic, or a shared CRDT).
-- A player traveling to the edge of their neighborhood's grid region is *handed off* to the next neighborhood: the WebRTC connection to the old neighborhood is torn down, a new connection to the next neighborhood is established, and the player's cycle continues with no gameplay interruption (a brief network blip is acceptable).
-- Neighborhoods do not need to be aware of each other's tick-by-tick state. They share only summary data: who killed whom, what crowns are held, what the day's totals look like.
+**Key insight:** most kills in GRID are from hitting trail cells, not head-on collisions. Trail cells are signed facts in the CRDT — no consensus needed. A player hitting a trail dies locally, deterministically, verifiably. Lockstep is only needed for the rare case of two nearby players colliding with each other simultaneously. This means the game works correctly even without lockstep — lockstep is a quality-of-experience upgrade for close encounters, not a correctness requirement.
 
-### Neighborhood routing
+### Peer discovery at scale
 
-When a new player joins today's grid, the discovery layer:
+**At low density (< ~100 peers per tile):** Nostr ephemeral presence events. Each player publishes position every 3-5s to their tile's presence topic. All subscribers see nearby players.
 
-1. Finds all active neighborhoods via the Nostr discovery channel.
-2. Asks each one its current size and whether it's accepting joiners.
-3. Joins the neighborhood with the most space (or creates a new one if all are at 6).
+**At high density (> ~100 per tile):** WebRTC gossip overlay. Once a player has any WebRTC connection, they gossip positions peer-to-peer. Each peer maintains a table of ~50 nearest players, discovering new peers through existing gossip neighbors. This is inspired by VON (Voronoi Overlay Network) spatial interest management.
 
-In v0.1 this routing is simple and centralized in the client logic. In v0.2 it becomes more sophisticated: prefer neighborhoods with similar latency, prefer neighborhoods where the player has a friend, etc.
+### Connection lifecycle
 
-### Neighborhood lifecycle
-
-- A neighborhood is *created* when the first player arrives at today's grid and finds no existing neighborhoods.
-- A neighborhood is *grown* by accepting joiners up to 6.
-- A neighborhood is *split* when it would exceed 6 — the new player creates a sibling instead.
-- A neighborhood is *merged* with a sibling when it shrinks below 3 and a sibling has space.
-- A neighborhood is *destroyed* when its last peer leaves. (Its persistent state — the cells in its region — is gossiped to a sibling neighborhood before destruction so the grid does not lose state.)
+1. Player joins, subscribes to tile presence topic on Nostr.
+2. Discovers nearby peers via presence events.
+3. Initiates WebRTC signaling via Nostr (SDP exchange as ephemeral events).
+4. Establishes data channel: gossip mode (position exchange every ~300ms).
+5. When a gossip peer enters lockstep range (~30 cells): upgrade to lockstep mode (per-tick input exchange).
+6. When a lockstep peer exits range: downgrade to gossip or disconnect.
+7. When a player moves to a new tile: subscribe to new tile presence, discover new neighbors.
 
 ## Time-anchored ticks
 
@@ -212,18 +206,32 @@ Approximate per-player budget at 10 ticks per second in a full 6-peer mesh:
 
 - Use **Trystero with the Nostr strategy**, configured with a room key derived from today's UTC date.
 - Cap the room at 6 peers. Joiner-7 should create a sibling room with key suffix `-b`, `-c`, etc.
-- Use a single Nostr discovery topic (`grid:YYYY-MM-DD`) for all sibling rooms. Sibling rooms gossip via this topic.
-- Persistent state sync (when a player joins mid-day) should be requested via a `STATE_REQUEST` message and answered by the most-senior peer in the room. See [`../protocol/wire-protocol.md`](../protocol/wire-protocol.md).
+- Use a single Nostr discovery topic (`grid:YYYY-MM-DD`) for all sibling rooms.
+- Persistent state sync via `STATE_REQUEST`/`STATE_RESPONSE`. See [`../protocol/wire-protocol.md`](../protocol/wire-protocol.md).
 - **Pinned Nostr relays for v0.1** (passed explicitly to Trystero's `relayUrls` config):
   ```
-  wss://nos.lol
   wss://relay.primal.net
   wss://relay.notoshi.win
   wss://relay.mostr.pub
   wss://relay.nostr.net
+  wss://nostr.fmt.wiz.biz
   ```
-  Each relay must: (1) accept WebSocket connections, (2) accept Trystero's custom event kind 22766 without blocking, (3) not require paid signup or web-of-trust policy, (4) not aggressively rate-limit event publishing. Relays that block custom kinds (e.g. `purplepag.es`), require signup (e.g. `nostr.wine`), enforce web-of-trust (e.g. `offchain.pub`), or rate-limit signaling (e.g. `relay.damus.io` under load) will silently break peer discovery or cause event-loop stalls that degrade lockstep timing.
-  All peers MUST use the same relay list, otherwise they may end up on disjoint subsets and never discover each other. The `--relay` CLI flag overrides this list for players who want to use community-run or self-hosted relays.
 - Hardcode Google's STUN servers. Allow override with `--stun`.
-- Do **not** ship a TURN server in v0.1. If players hit NAT issues, document the workaround (use a different network) and add a TURN fallback in v0.2.
-- **Node.js WebRTC polyfill**: Trystero requires `RTCPeerConnection`, which Node 22 does not provide natively. The `node-datachannel` package supplies a standards-compliant polyfill, passed to Trystero via the `rtcPolyfill` option. Single import site: `src/net/room.ts`.
+- **Node.js WebRTC polyfill**: `node-datachannel` supplies `RTCPeerConnection` for Node. Single import site: `src/net/room.ts`.
+
+## Implementation notes for v0.2
+
+- **Replace Trystero with `nostr-tools`** for all Nostr interactions (signaling, persistence, presence). `nostr-tools`'s `SimplePool` manages connections to multiple relays with reconnection and deduplication.
+- **WebRTC signaling via Nostr**: exchange SDP offers/answers as Nostr ephemeral events (kind 20079), tagged with the target peer's pubkey. ~100-150 LOC replacing Trystero's signaling.
+- **`node-datachannel`** remains the WebRTC polyfill. Used directly for `RTCPeerConnection` creation, no longer passed through Trystero.
+- **Pinned Nostr relays for v0.2** (same list, passed to `nostr-tools` SimplePool):
+  ```
+  wss://relay.primal.net
+  wss://relay.notoshi.win
+  wss://relay.mostr.pub
+  wss://relay.nostr.net
+  wss://nostr.fmt.wiz.biz
+  ```
+- **Tile topics**: `grid:YYYY-MM-DD:t:X-Y:cells` for cell snapshots, `grid:YYYY-MM-DD:t:X-Y:presence` for ephemeral presence.
+- **Relay federation** (v0.2+): world config event includes optional relay map. Default: all tiles → same 5 relays. At scale: tile ranges → dedicated community-run relays.
+- **Connection budget per peer**: ~6 lockstep + ~10 gossip = ~16 WebRTC connections. At ~1KB/s each = ~16KB/s upload. Well within consumer bandwidth.

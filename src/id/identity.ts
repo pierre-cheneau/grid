@@ -12,6 +12,7 @@
 // — both forbidden inside the simulation boundary.
 
 import { hostname, userInfo } from 'node:os';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { fnv1a32 } from './hash.js';
 
 const ID_ALPHABET = /[^A-Za-z0-9._-]/g;
@@ -20,10 +21,21 @@ const MAX_ID_LEN = 64;
 export interface LocalIdentity {
   /** Wire-protocol `from`. */
   readonly id: string;
-  /** u32 color seed used by the future renderer. */
+  /** u32 color seed used by the renderer. */
   readonly colorSeed: number;
   /** Wall-clock unix seconds at first derivation. Stable for the process lifetime. */
   readonly joinedAt: number;
+  /** secp256k1 secret key for Nostr event signing (32 bytes). */
+  readonly nostrSeckey: Uint8Array;
+  /** Hex-encoded secp256k1 public key (Nostr npub). */
+  readonly nostrPubkey: string;
+}
+
+/** Generate a fresh secp256k1 keypair for Nostr event signing. */
+export function generateNostrKeypair(): { seckey: Uint8Array; pubkey: string } {
+  const seckey = generateSecretKey();
+  const pubkey = getPublicKey(seckey);
+  return { seckey, pubkey };
 }
 
 function sanitize(s: string, fallback: string): string {
@@ -47,7 +59,8 @@ export function deriveLocalId(now: () => number = Date.now): LocalIdentity {
   const id = `${sanitize(user, 'anon')}@${sanitize(host, 'localhost')}`.slice(0, MAX_ID_LEN);
   const colorSeed = fnv1a32(id);
   const joinedAt = Math.floor(now() / 1000);
-  return { id, colorSeed, joinedAt };
+  const { seckey, pubkey } = generateNostrKeypair();
+  return { id, colorSeed, joinedAt, nostrSeckey: seckey, nostrPubkey: pubkey };
 }
 
 /** Append a suffix to an existing identity, re-deriving the colorSeed so that two
@@ -55,5 +68,11 @@ export function deriveLocalId(now: () => number = Date.now): LocalIdentity {
  *  and spawn positions. */
 export function rebaseIdentity(base: LocalIdentity, suffix: string): LocalIdentity {
   const fullId = `${base.id}-${suffix}`;
-  return { id: fullId, colorSeed: fnv1a32(fullId), joinedAt: base.joinedAt };
+  return {
+    id: fullId,
+    colorSeed: fnv1a32(fullId),
+    joinedAt: base.joinedAt,
+    nostrSeckey: base.nostrSeckey,
+    nostrPubkey: base.nostrPubkey,
+  };
 }

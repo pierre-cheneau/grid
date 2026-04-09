@@ -100,19 +100,37 @@ The half-life is a tuning parameter, not a constant. It will be adjusted based o
 
 ## Nostr persistence
 
-Nostr relays serve as the **backup persistence layer** — the grid's memory between peer sessions. During active play, the lockstep is authoritative. When all peers leave, Nostr holds the state until someone returns.
+Nostr relays serve as the **primary persistence layer** — the grid's distributed memory. During active play, the lockstep is authoritative for real-time state. Nostr holds the accumulated cell state that all peers share, and preserves it across peer-free gaps.
+
+### Nostr event kinds
+
+| Kind | Type | Purpose | Frequency |
+|------|------|---------|-----------|
+| 30078 | Parameterized replaceable | World config (size, seed, relay map) | 1/day per pubkey |
+| 30079 | Parameterized replaceable | Cell snapshot per tile (compressed) | ~1/30s per tile anchor |
+| 22770 | Regular | Chain attestation (state hash) | ~1/30s per tile |
+| 20079 | Ephemeral | WebRTC SDP signaling (offer/answer) | On connection setup |
+| 20078 | Ephemeral | Presence heartbeat (position, direction) | ~1/3s per player |
+
+**Why these kind ranges:**
+- **30078/30079 (parameterized replaceable, kind 30000-39999):** Relay keeps only the latest event per pubkey + d-tag. Old snapshots auto-replace. No garbage accumulation.
+- **22770 (regular, kind 0-9999):** Chain attestations are append-only history. Relays keep all of them — that's the point.
+- **20078/20079 (ephemeral, kind 20000-29999):** Relays forward but don't store. Presence and signaling are transient by nature.
 
 ### Cell snapshots
 
-Periodically (every 60 seconds during active play, and always on graceful shutdown), the room publishes a compressed cell snapshot to Nostr:
+Periodically (every 30 seconds during active play, and always on graceful shutdown), the tile anchor publishes a compressed cell snapshot to Nostr:
 
 ```
-Kind: 22769 (grid:cells)
-Tags: [["d", "grid:2026-04-09:cells"], ["tick", "540000"]]
+Kind: 30079 (parameterized replaceable)
+Tags: [["d", "grid:2026-04-09:t:3-7"], ["tick", "540000"]]
 Content: <compressed binary cell array>
+Sig: <Schnorr signature>
 ```
 
-The cell array is a compact binary format (see "Compact cell encoding" below), compressed with the best available built-in algorithm (gzip, brotli, or raw deflate — benchmarked during implementation).
+The `d` tag encodes the day and tile coordinates. Because this is a parameterized replaceable event, the relay automatically discards the previous snapshot for this pubkey + tile combination.
+
+The cell array is a compact binary format (see "Compact cell encoding" below), compressed with gzip.
 
 ### Compact cell encoding
 
@@ -151,11 +169,15 @@ The returning player enters a world shaped by everyone who played before them, w
 ### World config events
 
 ```
-Kind: 22768 (grid:world-config)
-Tags: [["d", "grid:2026-04-09"], ["w", "120"], ["h", "60"], ["peak", "25"]]
+Kind: 30078 (parameterized replaceable)
+Tags: [["d", "grid:2026-04-09"], ["w", "632"], ["h", "316"], ["peak", "1000"], ["seed", "a3f8..."]]
+Content: {"relay_map": {"default": ["wss://relay.primal.net", ...]}}
+Sig: <Schnorr signature>
 ```
 
-Published at midnight UTC by every peer online at the reset. Contains the computed world dimensions for the next day. Deterministic — all publishers produce identical data. On cold start, the first peer fetches this to know the world size.
+Published at midnight UTC by every peer online at the reset. Contains the computed world dimensions, the deterministic daily seed, and an optional relay federation map for tile-range → relay routing. Deterministic — all publishers produce identical data (same day → same config). On cold start, the first peer fetches this to know the world size and tile layout.
+
+The relay map is empty by default (all tiles use the pinned relay list). At scale, community-run relays can be added to handle specific tile ranges, reducing load on the default relays.
 
 ## Cryptographic integrity: the hash chain
 
@@ -205,18 +227,20 @@ Published every 300 ticks (30 seconds) per room. Multiple independent peers publ
 
 ### Identity keypair
 
-The identity cache (`~/.grid/identity.json`) is extended with a Nostr-compatible keypair:
+The identity cache (`~/.grid/identity.json`) is extended with a Nostr-compatible secp256k1 keypair:
 
 ```json
 {
   "id": "corne@thinkpad",
   "colorSeed": 12345,
-  "nostrPubkey": "02ab3f...",
-  "nostrPrivkey": "..."
+  "nostrSeckey": "hex-encoded-32-byte-secret-key",
+  "nostrPubkey": "hex-encoded-32-byte-pubkey"
 }
 ```
 
-Generated once alongside the identity. Used to sign all Nostr events published by this client. The pubkey is the player's cryptographic identity — persistent across sessions, independently verifiable.
+Generated once alongside the identity using `@noble/curves` (comes transitively via `nostr-tools`). The secret key is a random 32-byte value; the pubkey is derived deterministically from it. Used to sign all Nostr events published by this client with Schnorr/BIP-340 signatures.
+
+The pubkey is the player's **cryptographic identity** — persistent across sessions, independently verifiable, unforgeable. It is distinct from the human-readable `id` (which is derived from USER@HOSTNAME). The pubkey is what makes cell attribution trustworthy: "this cell was placed by this pubkey" is cryptographically verifiable by anyone.
 
 ### What cryptocurrency teaches us (and what we skip)
 
@@ -317,45 +341,49 @@ The replay system is the same simulation core as live play, just fed inputs from
 - **Player history.** A player can search the archive for their own past appearances and see what they did months ago.
 - **Anti-fragility.** Even if all current players disappear, the archive remains. The next person to type `npx grid` can browse a year of history before they ever play.
 
-## Spatial rooms and cross-room persistence (v0.2)
+## Spatial tiles (v0.2)
 
-In v0.1, all players share a single room (up to 6 peers). In v0.2, the world is partitioned into spatial sectors, each sector being a room. This section describes the design that v0.1 anticipates but does not build.
+v0.2 replaces rooms with a spatial tile system. Tiles are fixed-size partitions of the world used for cell state routing. They are NOT gameplay boundaries — players move freely across tiles without interruption.
 
-### Fixed-sector partitioning
-
-The world is divided into rectangular sectors. Each sector is a room with its own lockstep. Players in the same sector are in the same room.
+### Tile geometry
 
 ```
-World: 200x100
-Sector size: 60x40 (tunable)
-Grid: 4x3 = 12 sectors
-Each sector: room key "grid:2026-04-09:s2-1"
+Tile size: 256 × 256 cells (fixed)
+Tile coordinates: tileX = floor(worldX / 256), tileY = floor(worldY / 256)
+Nostr topic per tile: "grid:YYYY-MM-DD:t:X-Y"
 ```
 
-### Room migration
+| World size | Tiles | Players/tile (at target density) |
+|-----------|-------|----------------------------------|
+| 250×250 | 1 | All |
+| 632×316 | 6 | ~170 |
+| 2000×1000 | 32 | ~310 |
+| 6320×3160 | 325 | ~310 |
 
-When a player's cycle crosses a sector boundary:
+### Tile subscription
 
-1. Client sends `BYE` to the old room.
-2. Connects to the new room via Nostr signaling.
-3. Sends `HELLO`, receives `STATE_RESPONSE` for the new sector.
-4. Brief transition (~1-2s).
+A player subscribes to the tiles that overlap their viewport (at most 4 tiles) plus adjacent tiles for prefetching (9 tiles total). When they move to a new viewport position that overlaps different tiles, they subscribe to new tiles and unsubscribe from old ones.
 
-### Cross-room cell gossip
+**Prefetching:** When a player is within 50 cells of a tile boundary, start subscribing to the adjacent tile. At maximum speed (10 cells/sec), this gives 5 seconds of lead time — more than enough for cell data to arrive from Nostr.
 
-Each room publishes its cell snapshot to Nostr every 60 seconds. Adjacent rooms subscribe to their neighbors' snapshots. Cross-room cells are visible with ~60 second propagation delay. Direct WebRTC gossip between adjacent rooms can reduce this to <1 second.
+### Tile anchor
 
-The CRDT nature of cells makes cross-room merging trivially conflict-free: union of sets, latest timestamp wins on position conflicts.
+Within each tile, the longest-connected peer self-elects as the tile "anchor." The anchor aggregates cells from all peers in the tile and publishes the authoritative cell snapshot to Nostr. Other peers CAN also publish (there is no authority gate); the anchor reduces redundancy. If the anchor leaves, the next-most-senior peer takes over — same seniority pattern as v0.1's STATE_RESPONSE.
+
+At 300 peers per tile, without anchors: 300 snapshots per 30s = 10/sec. With anchors: 1/30s. 100× reduction.
+
+### CRDT cell merge
+
+Multiple peers may publish cell snapshots for the same tile (anchor + deltas). Subscribers merge them:
+- Union of all cell sets
+- Same position with different ticks → latest `createdAtTick` wins
+- Cells older than `2 * halfLifeTicks` → expired and discarded
+
+The merge is commutative, associative, and idempotent — the mathematical guarantee of conflict-free convergence.
 
 ### Why v0.1 doesn't build this
 
-With <50 expected players and the world sized to match, a single room covers the entire play area. The viewport camera gives the "big world" feeling. Spatial rooms become necessary at ~20+ simultaneous players, which is a v0.2 scale.
-
-The v0.1 architecture anticipates spatial rooms by:
-- Using world coordinates (not room-local) for all cell keys
-- Making cells self-describing (colorSeed stored on cell)
-- Keeping the simulation independent of room boundaries
-- Structuring `NetClient` so it can be stopped/started with different room keys
+With <50 expected players and a 250×250 world, there is exactly 1 tile covering the entire play area. v0.1 uses Trystero rooms instead. v0.2's tile code runs with 1 tile at small scale and N tiles at large scale — same code, different tile count.
 
 ## Implementation notes for v0.1
 
