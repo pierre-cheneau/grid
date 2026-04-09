@@ -1,27 +1,30 @@
 #!/usr/bin/env node
-// GRID — Stage 3 CLI driver. Wires NetClient + AnsiWriter into one process.
+// GRID — Stage 4 CLI driver. Wires NetClient + intro animation + renderer + epitaph.
 //
-// Layout responsibilities split into helpers so `main()` stays small:
-//   parseArgs           — argv → CliConfig
-//   makeInitialState    — CliConfig + identity → GridState
-//   setupRenderer       — choose AnsiWriter (TTY) or status-line fallback (piped)
-//   setupShutdown       — return the idempotent shutdown closure
-//   setupKeyboard       — raw stdin → NetClient.setLocalInput
-//   main                — wire everything and start the 10 fps tick loop
-//
-// Top-level error discipline (errors-and-boundaries.md §220-237):
-//   - main() is wrapped in .catch() that calls cleanupTerminal() before exiting
-//   - process.on('uncaughtException' | 'unhandledRejection') handlers also clean up
-// Quadruple coverage means a stuck alt-screen is impossible barring a SIGKILL.
+// Flow: resolveIdentity → client.start() → tryMaximize → playIntro (1.5s, overlaps
+// WebRTC handshake) → game loop (10fps render) → shutdown → epitaph to scrollback.
 
 import { createWriteStream } from 'node:fs';
 import { argv, exit, pid, stdin, stdout } from 'node:process';
-import { deriveLocalId, rebaseIdentity } from '../id/identity.js';
+import { resolveIdentity } from '../id/cache.js';
+import { rebaseIdentity } from '../id/identity.js';
+import type { LocalIdentity } from '../id/identity.js';
 import { TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
 import { createTrysteroRoom } from '../net/room.js';
-import { AnsiWriter, type Viewport, buildFrame, cleanupTerminal } from '../render/index.js';
+import { rgbFromColorSeed } from '../render/color.js';
+import {
+  AnsiWriter,
+  type Viewport,
+  buildFrame,
+  cleanupTerminal,
+  createSessionTracker,
+  playIntro,
+  renderEpitaph,
+  tryMaximize,
+} from '../render/index.js';
+import type { SessionTracker } from '../render/session.js';
 import { type Config, type GridState, TICKS_PER_SECOND, hashState, newRng } from '../sim/index.js';
 
 interface CliConfig {
@@ -36,7 +39,6 @@ interface CliConfig {
 }
 
 interface RendererHandle {
-  /** Render the current state, or a "connecting..." placeholder if `state` is null. */
   render(state: GridState | null, hash?: string): void;
   shutdown(): void;
 }
@@ -58,14 +60,19 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
   const today = new Date().toISOString().slice(0, 10);
   return {
     room: opts['room'] ?? `grid:${today}`,
-    width: opts['width'] ? Number.parseInt(opts['width'], 10) : 32,
-    height: opts['height'] ? Number.parseInt(opts['height'], 10) : 32,
+    // Raw overrides — null means "auto-size to terminal after maximize".
+    width: opts['width'] ? Number.parseInt(opts['width'], 10) : 0,
+    height: opts['height'] ? Number.parseInt(opts['height'], 10) : 0,
     seed: opts['seed'] ? BigInt(opts['seed']) : 0xc0ffee_deadbeefn,
     halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 600,
     name: opts['name'] ?? null,
     debug: opts['debug'] === 'true',
     relayUrls: opts['relay'] ? opts['relay'].split(',') : [],
   };
+}
+
+function spawnPos(colorSeed: number, w: number, h: number): [number, number] {
+  return [Math.abs(colorSeed) % w, Math.abs(colorSeed >> 8) % h];
 }
 
 function makeInitialState(cfg: CliConfig, localId: string, colorSeed: number): GridState {
@@ -75,8 +82,7 @@ function makeInitialState(cfg: CliConfig, localId: string, colorSeed: number): G
     halfLifeTicks: cfg.halfLifeTicks,
     seed: cfg.seed,
   };
-  const x = Math.abs(colorSeed) % cfg.width;
-  const y = Math.abs(colorSeed >> 8) % cfg.height;
+  const [x, y] = spawnPos(colorSeed, cfg.width, cfg.height);
   return {
     tick: 0,
     config,
@@ -99,50 +105,27 @@ function makeInitialState(cfg: CliConfig, localId: string, colorSeed: number): G
   };
 }
 
-function buildStatusLine(state: GridState, localId: string): string {
-  const me = state.players.get(localId);
-  const tick = state.tick.toString().padStart(4, '0');
-  const pos = me ? `(${me.pos.x},${me.pos.y})` : '(--)';
-  const dir = me ? me.dir : '?';
-  const alive = me?.isAlive ? 'Y' : 'N';
-  const score = me?.score ?? 0;
-  const peers = state.players.size;
-  const hash = hashState(state);
-  return `[t=${tick}] me=${pos} dir=${dir} peers=${peers} alive=${alive} score=${score} hash=${hash}`;
-}
-
-function setupRenderer(localId: string): RendererHandle {
-  // TTY fallback: piped output gets the Stage 5 status-line behavior, no escapes.
-  if (!stdout.isTTY) {
+function setupRenderer(localId: string, writer: AnsiWriter | null): RendererHandle {
+  if (!writer) {
     let lastPrinted = 0;
     return {
       render(state) {
-        if (state === null) {
-          stdout.write('connecting...\n');
-          return;
-        }
+        if (state === null) return;
         if (state.tick - lastPrinted < TICKS_PER_SECOND) return;
         lastPrinted = state.tick;
-        stdout.write(`${buildStatusLine(state, localId)}\n`);
+        const h = hashState(state);
+        stdout.write(`[t=${state.tick}] peers=${state.players.size} hash=${h}\n`);
       },
-      shutdown() {
-        /* nothing to clean up */
-      },
+      shutdown() {},
     };
   }
-  // Real TTY: alt-screen + buildFrame at 10 fps.
-  const writer = new AnsiWriter({ stdout });
-  writer.begin();
   let viewport: Viewport = { cols: stdout.columns ?? 80, rows: stdout.rows ?? 24 };
   stdout.on('resize', () => {
     viewport = { cols: stdout.columns ?? 80, rows: stdout.rows ?? 24 };
   });
   return {
     render(state, hash) {
-      if (state === null) {
-        writer.endFrame(['connecting to room...']);
-        return;
-      }
+      if (state === null) return;
       writer.endFrame(buildFrame(state, viewport, localId, hash));
     },
     shutdown() {
@@ -151,13 +134,31 @@ function setupRenderer(localId: string): RendererHandle {
   };
 }
 
-function setupShutdown(client: NetClient, renderer: RendererHandle): () => Promise<void> {
+function setupShutdown(
+  client: NetClient,
+  renderer: RendererHandle,
+  tracker: SessionTracker,
+  id: LocalIdentity,
+): () => Promise<void> {
   let stopping = false;
   return async () => {
     if (stopping) return;
     stopping = true;
     renderer.shutdown();
-    stdout.write(`\ngrid: bye. final hash = ${hashState(client.currentState)}\n`);
+    const stats = tracker.finalize(Date.now());
+    stdout.write(
+      renderEpitaph(
+        {
+          identity: id.id,
+          identityColor: rgbFromColorSeed(id.colorSeed),
+          durationMs: stats.durationMs,
+          derezzes: stats.derezzes,
+          deaths: stats.deaths,
+          longestRunMs: stats.longestRunMs,
+        },
+        stdout.columns ?? 80,
+      ),
+    );
     await client.stop();
     exit(0);
   };
@@ -168,7 +169,7 @@ function setupKeyboard(client: NetClient, shutdown: () => Promise<void>): void {
   stdin.resume();
   stdin.on('data', (chunk) => {
     const s = chunk.toString();
-    if (s === 'q' || s === '\x03' /* Ctrl-C */ || s === '\x1b' /* ESC */) {
+    if (s === 'q' || s === '\x03' || s === '\x1b') {
       void shutdown();
       return;
     }
@@ -182,53 +183,82 @@ async function main(): Promise<void> {
   if (cfg.debug) {
     const path = `./grid-debug-${pid}.log`;
     const stream = createWriteStream(path, { flags: 'a' });
-    setDebugLogger((msg) => {
-      stream.write(`${new Date().toISOString()} ${msg}\n`);
-    });
+    setDebugLogger((msg) => stream.write(`${new Date().toISOString()} ${msg}\n`));
     process.stderr.write(`grid: debug log → ${path}\n`);
   }
-  const baseId = deriveLocalId();
-  // When `--name <suffix>` is given, re-derive id + colorSeed from the suffixed
-  // name so two terminals on the same machine get distinct colors and spawn positions.
+
+  // Maximize BEFORE computing grid dimensions so the grid fills the
+  // post-maximize terminal, not the pre-maximize one.
+  const writer = stdout.isTTY ? new AnsiWriter({ stdout }) : null;
+  if (writer) {
+    writer.begin();
+    await tryMaximize(stdout);
+  }
+
+  // Compute grid dimensions from the (now maximized) terminal size.
+  // Explicit --width/--height override; 0 means auto-size.
+  const gridW = cfg.width > 0 ? cfg.width : Math.max(16, (stdout.columns ?? 80) - 2);
+  const gridH = cfg.height > 0 ? cfg.height : Math.max(8, (stdout.rows ?? 24) - 3);
+  const gridCfg = { ...cfg, width: gridW, height: gridH };
+
+  const baseId = await resolveIdentity();
   const id = cfg.name === null ? baseId : rebaseIdentity(baseId, cfg.name);
   const client = new NetClient(
     {
-      roomKey: cfg.room,
+      roomKey: gridCfg.room,
       identity: id,
-      initialState: makeInitialState(cfg, id.id, id.colorSeed),
+      initialState: makeInitialState(gridCfg, id.id, id.colorSeed),
     },
     {
       roomFactory: (roomKey, peerId) =>
         createTrysteroRoom(roomKey, peerId, {
-          relayUrls: cfg.relayUrls.length > 0 ? cfg.relayUrls : undefined,
+          relayUrls: gridCfg.relayUrls.length > 0 ? gridCfg.relayUrls : undefined,
         }),
       clock: Date.now,
     },
   );
   await client.start();
-  const renderer = setupRenderer(id.id);
-  const shutdown = setupShutdown(client, renderer);
+
+  // Intro animation overlaps with the WebRTC handshake.
+  if (writer) {
+    const [sx, sy] = spawnPos(id.colorSeed, gridW, gridH);
+    await playIntro(
+      writer,
+      {
+        cols: stdout.columns ?? 80,
+        rows: stdout.rows ?? 24,
+        identity: id.id,
+        spawnX: sx,
+        spawnY: sy,
+        gridW,
+        gridH,
+        identityColor: rgbFromColorSeed(id.colorSeed),
+      },
+      Math.floor(Date.now() / 1000),
+    );
+    // No screen clear needed — the first game frame fills the entire viewport
+    // with padding rows, overwriting the intro seamlessly.
+  }
+
+  const tracker = createSessionTracker(Date.now());
+  const renderer = setupRenderer(id.id, writer);
+  const shutdown = setupShutdown(client, renderer, tracker, id);
   setupKeyboard(client, shutdown);
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
-  let shownConnecting = false;
   setInterval(
     () => {
-      if (client.isPaused) {
-        if (!shownConnecting) {
-          shownConnecting = true;
-          renderer.render(null); // signals "connecting..." to the renderer
-        }
-        return;
-      }
       const result = client.runOnce(Date.now());
-      if (result !== null) renderer.render(result, client.stateHash);
+      if (result !== null) {
+        const me = result.players.get(id.id);
+        if (me) tracker.update(me.isAlive, me.score, Date.now());
+        renderer.render(result, client.stateHash);
+      }
     },
     Math.floor(TICK_DURATION_MS / 2),
   );
 }
 
-// Quadruple terminal-cleanup safety net.
 process.on('uncaughtException', (err: unknown) => {
   cleanupTerminal();
   process.stderr.write(`grid: uncaught: ${String(err)}\n`);

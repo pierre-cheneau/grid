@@ -238,6 +238,12 @@ export class NetClient {
   // ---- Internal: handlers ----
 
   private handleHello(msg: import('./messages.js').HelloMsg, sessionId: string): void {
+    // Reject ghost peers: a stale Nostr presence from a previous session of
+    // ourselves. The ghost has the same player id but a different session id.
+    if (msg.from === this.localId) {
+      dbg(`client[${this.localId}]: ignoring HELLO from self (ghost peer session=${sessionId})`);
+      return;
+    }
     const result = this.registry.registerHello(msg, sessionId);
     this.faultCounts.set(sessionId, 0);
     if (result.kind === 'spoof') {
@@ -306,7 +312,20 @@ export class NetClient {
 
   private handleStateResponse(msg: StateResponseMsg): void {
     if (msg.to !== this.localId) return;
+    if (msg.from === this.localId) {
+      dbg(`client[${this.localId}]: ignoring STATE_RESPONSE from self (ghost peer)`);
+      return;
+    }
     const { state } = installSnapshot(msg);
+    // Reject snapshots with incompatible grid dimensions — they're from a
+    // different game session that reused the same room name.
+    const local = this.cfg.initialState.config;
+    if (state.config.width !== local.width || state.config.height !== local.height) {
+      dbg(
+        `client[${this.localId}]: rejecting snapshot from ${msg.from} — grid ${state.config.width}x${state.config.height} ≠ local ${local.width}x${local.height}`,
+      );
+      return;
+    }
     dbg(`client[${this.localId}]: installing snapshot from ${msg.from} at tick ${state.tick}`);
     this.lockstep.reset(state);
     for (const pid of state.players.keys()) {

@@ -23,7 +23,6 @@ import {
   SHOW_CURSOR,
   SYNC_BEGIN,
   SYNC_END,
-  moveTo,
 } from './ansi.js';
 
 export interface AnsiWriterOpts {
@@ -47,17 +46,27 @@ export class AnsiWriter {
   }
 
   /**
-   * Write a full frame in synchronized output mode. Each row is positioned with
-   * a `moveTo` so the renderer never depends on cursor wrap behavior.
+   * Write a full frame. Uses cork/uncork to batch the entire frame into a single
+   * WriteFile syscall — the most effective flicker prevention on Windows conhost.
+   * Cursor-home + sequential rows minimizes escape sequence overhead.
    */
   endFrame(rows: ReadonlyArray<string>): void {
     if (this.stopped) return;
-    let buf = SYNC_BEGIN;
-    for (let i = 0; i < rows.length; i++) {
-      buf += moveTo(i + 1, 1) + rows[i];
-    }
-    buf += SYNC_END;
-    this.stdout.write(buf);
+    this.writeCorked(`${SYNC_BEGIN}\x1b[H${rows.join('\r\n')}${SYNC_END}`);
+  }
+
+  /** Write a diff patch (only changed rows). Used by the intro animation. */
+  writeDiff(data: string): void {
+    if (this.stopped || data.length === 0) return;
+    this.writeCorked(SYNC_BEGIN + data + SYNC_END);
+  }
+
+  /** Batch a write into a single syscall via cork/uncork. */
+  private writeCorked(data: string): void {
+    const stream = this.stdout as NodeJS.WriteStream;
+    if ('cork' in stream) stream.cork();
+    stream.write(data);
+    if ('uncork' in stream) stream.uncork();
   }
 
   /** Restore cursor, exit alt-screen, leave terminal as we found it. Idempotent. */

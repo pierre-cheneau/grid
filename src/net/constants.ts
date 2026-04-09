@@ -39,7 +39,7 @@ export const ROOM_PREFIX = 'grid:';
 
 /** Time to wait for a peer connection before unpausing as the seed player. Overlaps
  *  with the WebRTC handshake (~1.5-2s) and the future intro animation (~1.5s). */
-export const SEED_TIMEOUT_MS = 3000;
+export const SEED_TIMEOUT_MS = 12000;
 
 /** If the wall-clock jumps by more than this between two runOnce calls, the process
  *  was likely frozen (Windows Quick Edit, laptop sleep, debugger breakpoint). The

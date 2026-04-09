@@ -20,8 +20,8 @@ export const GLYPH_HEAD = '█';
  */
 export const GLYPH_TRAIL: readonly [string, string, string, string] = ['█', '▓', '▒', '░'];
 
-/** Empty cell on the play field. A single ASCII space; the background color does the work. */
-export const GLYPH_FLOOR = ' ';
+/** Floor cell glyph. A dot that breathes with a slow color pulse — the grid is alive. */
+export const GLYPH_FLOOR = '.';
 
 /**
  * Box-drawing characters for the play-area frame. `identity-and-aesthetic.md` §40-46.
@@ -40,7 +40,7 @@ export const BOX_VERTICAL = '│';
  */
 export const COLOR_FLOOR: readonly [number, number, number] = [0x0a, 0x0a, 0x1a]; // #0a0a1a — dim blue-black
 export const COLOR_WALL: readonly [number, number, number] = [0x00, 0xff, 0xff]; // #00ffff — cyan
-export const COLOR_INTRO: readonly [number, number, number] = [0xff, 0x6e, 0x2e]; // #ff6e2e — orange (Stage 4)
+export const COLOR_INTRO: readonly [number, number, number] = [0x00, 0xff, 0x41]; // #00ff41 — Matrix green
 export const COLOR_HUD: readonly [number, number, number] = [0xff, 0xff, 0xff]; // white
 export const COLOR_WARN: readonly [number, number, number] = [0xff, 0x00, 0xff]; // magenta — derez/warnings (Stage 4)
 
@@ -62,3 +62,13 @@ export const FRAME_OVERHEAD_ROWS = 3 as const;
  *   1 left border + 1 right border = 2.
  */
 export const FRAME_OVERHEAD_COLS = 2 as const;
+
+/** Hidden messages that appear 1-in-100 plays during the intro pause phase. */
+export const HIDDEN_MESSAGES: readonly string[] = [
+  'end of line',
+  'i fight for the users',
+  'the grid — a digital frontier',
+  'greetings program',
+  'programs do not die — they are derezzed',
+  'the only way to win is to not play alone',
+];

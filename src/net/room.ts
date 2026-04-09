@@ -29,11 +29,11 @@ export type RoomFactory = (
 // Trystero's custom event kind 22766, (3) not require paid signup or web-of-trust,
 // (4) not aggressively rate-limit. See docs/architecture/networking.md.
 const DEFAULT_RELAYS = [
-  'wss://nos.lol',
   'wss://relay.primal.net',
   'wss://relay.notoshi.win',
   'wss://relay.mostr.pub',
   'wss://relay.nostr.net',
+  'wss://nostr.fmt.wiz.biz',
 ];
 
 type Listener = (raw: string, peerId: string) => void;

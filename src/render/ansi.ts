@@ -40,3 +40,66 @@ export const RESET = '\x1b[0m';
 export function moveTo(row1: number, col1: number): string {
   return `\x1b[${row1};${col1}H`;
 }
+
+/** Xterm XTWINOPS maximize escape. Silently ignored by unsupported terminals. */
+export const MAXIMIZE = '\x1b[9;1t';
+
+/**
+ * Best-effort terminal maximize. Uses platform-specific methods:
+ * - Windows: ShowWindow(SW_MAXIMIZE) via a tiny PowerShell call (~300ms)
+ * - macOS/Linux: xterm XTWINOPS escape \x1b[9;1t (instant, but only works
+ *   on xterm-compatible terminals)
+ *
+ * After the maximize attempt, waits up to 300ms for a `resize` event to
+ * detect the new dimensions. The animation adapts to whatever size it gets.
+ */
+export async function tryMaximize(out: NodeJS.WriteStream): Promise<void> {
+  if (!out.isTTY) return;
+
+  if (process.platform === 'win32') {
+    // Windows: cmd.exe/conhost ignores xterm escapes. Call Win32
+    // ShowWindow(GetConsoleWindow(), SW_MAXIMIZE) via a temp PowerShell
+    // script to avoid cmd.exe → Node → PowerShell quote-escaping hell.
+    try {
+      const { execSync } = await import('node:child_process');
+      const { writeFileSync, unlinkSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const { tmpdir } = await import('node:os');
+      const script = join(tmpdir(), `grid-max-${process.pid}.ps1`);
+      writeFileSync(
+        script,
+        [
+          "Add-Type -Name W -Namespace C -MemberDefinition @'",
+          '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);',
+          '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();',
+          "'@",
+          '[C.W]::ShowWindow([C.W]::GetConsoleWindow(), 3) | Out-Null',
+        ].join('\n'),
+      );
+      execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${script}"`, {
+        stdio: 'ignore',
+        timeout: 3000,
+      });
+      try {
+        unlinkSync(script);
+      } catch {
+        /* cleanup best-effort */
+      }
+    } catch {
+      // Best-effort: if PowerShell isn't available, continue at current size.
+    }
+  } else {
+    out.write(MAXIMIZE);
+  }
+
+  // Wait for the terminal to report its new dimensions via a resize event.
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 300);
+    const onResize = () => {
+      clearTimeout(timer);
+      out.removeListener('resize', onResize);
+      setTimeout(resolve, 50);
+    };
+    out.on('resize', onResize);
+  });
+}

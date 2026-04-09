@@ -24,7 +24,7 @@
 import { type GridState, type Player, type PlayerId, type Tick, cellKey } from '../sim/index.js';
 import { ageBucket, ageFraction } from './age.js';
 import { RESET } from './ansi.js';
-import { ansiBg, ansiFg, fadeColor, rgbFromColorSeed } from './color.js';
+import { ansiBg, ansiFg, rgbFromColorSeed as cachedRgb, fadeColor } from './color.js';
 import {
   BOX_BOTTOM_LEFT,
   BOX_BOTTOM_RIGHT,
@@ -41,6 +41,7 @@ import {
   GLYPH_HEAD,
   GLYPH_TRAIL,
 } from './constants.js';
+import { breathingDotColor } from './intro.js';
 
 export interface Viewport {
   readonly cols: number;
@@ -68,21 +69,74 @@ export function buildFrame(
   const floorBg = ansiBg(COLOR_FLOOR[0], COLOR_FLOOR[1], COLOR_FLOOR[2]);
   const hudFg = ansiFg(COLOR_HUD[0], COLOR_HUD[1], COLOR_HUD[2]);
 
+  // Living floor: breathing dots. Period of 20 ticks = 2 seconds at 10 tps,
+  // matching the intro animation's ~2s breathing rhythm.
+  const floorDotRgb = breathingDotColor(state.tick, 20);
+  const floorDotFg = ansiFg(floorDotRgb[0], floorDotRgb[1], floorDotRgb[2]);
+
+  // Center the grid when the viewport is larger than the frame.
+  const padX = Math.max(0, Math.floor((viewport.cols - needCols) / 2));
+  const padY = Math.max(0, Math.floor((viewport.rows - needRows) / 2));
+
+  // Breathing dots fill ALL areas outside the grid — the world extends beyond
+  // the arena borders. One color escape per row (same optimization as the intro).
+  const dotPad = (n: number) => (n > 0 ? '.'.repeat(n) : '');
+  const hPadL = dotPad(padX);
+  const hPadR = dotPad(Math.max(0, viewport.cols - padX - needCols));
+  const dotRow = floorBg + floorDotFg + '.'.repeat(viewport.cols) + RESET;
+
   const rows: string[] = [];
 
+  // Top vertical padding — breathing dots
+  for (let i = 0; i < padY; i++) rows.push(dotRow);
+
   // Top border
-  rows.push(floorBg + wall + BOX_TOP_LEFT + BOX_HORIZONTAL.repeat(w) + BOX_TOP_RIGHT + RESET);
+  rows.push(
+    floorBg +
+      floorDotFg +
+      hPadL +
+      wall +
+      BOX_TOP_LEFT +
+      BOX_HORIZONTAL.repeat(w) +
+      BOX_TOP_RIGHT +
+      floorDotFg +
+      hPadR +
+      RESET,
+  );
 
   // Play rows
   for (let y = 0; y < h; y++) {
-    rows.push(buildPlayRow(state, headByPos, y, w, floorBg, wall));
+    rows.push(
+      floorBg +
+        floorDotFg +
+        hPadL +
+        buildPlayRow(state, headByPos, y, w, floorBg, wall, floorDotFg) +
+        floorDotFg +
+        hPadR +
+        RESET,
+    );
   }
 
   // Bottom border
-  rows.push(floorBg + wall + BOX_BOTTOM_LEFT + BOX_HORIZONTAL.repeat(w) + BOX_BOTTOM_RIGHT + RESET);
+  rows.push(
+    floorBg +
+      floorDotFg +
+      hPadL +
+      wall +
+      BOX_BOTTOM_LEFT +
+      BOX_HORIZONTAL.repeat(w) +
+      BOX_BOTTOM_RIGHT +
+      floorDotFg +
+      hPadR +
+      RESET,
+  );
 
-  // Status row — uses the full viewport width since it sits below the frame.
-  rows.push(buildStatusRow(state, localId, viewport.cols, floorBg, hudFg, hash));
+  // Status row: centered text, dot-padded to fill the full viewport.
+  const statusText = buildStatusRow(state, localId, viewport.cols, floorDotFg, hudFg, hash);
+  rows.push(floorBg + statusText + RESET);
+
+  // Bottom vertical padding — breathing dots
+  for (let i = rows.length; i < viewport.rows; i++) rows.push(dotRow);
 
   return rows;
 }
@@ -96,6 +150,9 @@ function indexLivePlayers(state: GridState): Map<string, Player> {
   return m;
 }
 
+/** Build a play row with minimal escape sequences. Only emits a new ansiFg when
+ *  the color changes from the previous cell — the same optimization that makes
+ *  the intro animation smooth on Windows conhost (microsoft/terminal#10362). */
 function buildPlayRow(
   state: GridState,
   headByPos: ReadonlyMap<string, Player>,
@@ -103,44 +160,53 @@ function buildPlayRow(
   w: number,
   floorBg: string,
   wall: string,
+  floorFg: string,
 ): string {
   let row = floorBg + wall + BOX_VERTICAL;
+  let lastFg = '';
   for (let x = 0; x < w; x++) {
-    row += cellGlyph(state, headByPos, x, y);
+    const head = headByPos.get(`${x},${y}`);
+    if (head !== undefined) {
+      const rgb = cachedRgb(head.colorSeed);
+      const fg = ansiFg(rgb[0], rgb[1], rgb[2]);
+      if (fg !== lastFg) {
+        row += fg;
+        lastFg = fg;
+      }
+      row += GLYPH_HEAD;
+      continue;
+    }
+    const cell = state.cells.get(cellKey(x, y));
+    if (cell !== undefined) {
+      const age: Tick = state.tick - cell.createdAtTick;
+      const bucket = ageBucket(age, state.config.halfLifeTicks);
+      const seed = state.players.get(cell.ownerId)?.colorSeed ?? 0;
+      const base = cachedRgb(seed);
+      const faded = fadeColor(base, ageFraction(age, state.config.halfLifeTicks));
+      const fg = ansiFg(faded[0], faded[1], faded[2]);
+      if (fg !== lastFg) {
+        row += fg;
+        lastFg = fg;
+      }
+      row += GLYPH_TRAIL[bucket];
+      continue;
+    }
+    // Living floor: breathing dot. Only re-emit the color if it changed.
+    if (lastFg !== floorFg) {
+      row += floorFg;
+      lastFg = floorFg;
+    }
+    row += GLYPH_FLOOR;
   }
-  row += wall + BOX_VERTICAL + RESET;
+  row += wall + BOX_VERTICAL;
   return row;
-}
-
-function cellGlyph(
-  state: GridState,
-  headByPos: ReadonlyMap<string, Player>,
-  x: number,
-  y: number,
-): string {
-  const head = headByPos.get(`${x},${y}`);
-  if (head !== undefined) {
-    const [r, g, b] = rgbFromColorSeed(head.colorSeed);
-    return ansiFg(r, g, b) + GLYPH_HEAD;
-  }
-  const cell = state.cells.get(cellKey(x, y));
-  if (cell !== undefined) {
-    const age: Tick = state.tick - cell.createdAtTick;
-    const bucket = ageBucket(age, state.config.halfLifeTicks);
-    const owner = state.players.get(cell.ownerId);
-    const seed = owner?.colorSeed ?? 0;
-    const base = rgbFromColorSeed(seed);
-    const faded = fadeColor(base, ageFraction(age, state.config.halfLifeTicks));
-    return ansiFg(faded[0], faded[1], faded[2]) + GLYPH_TRAIL[bucket];
-  }
-  return GLYPH_FLOOR;
 }
 
 function buildStatusRow(
   state: GridState,
   localId: PlayerId,
   width: number,
-  floorBg: string,
+  dotFg: string,
   hudFg: string,
   hash?: string,
 ): string {
@@ -152,7 +218,9 @@ function buildStatusRow(
   const score = me?.score ?? 0;
   const peers = state.players.size;
   const text = `t=${tick} me=${pos} dir=${dir} peers=${peers} alive=${alive} score=${score}${hash ? ` hash=${hash}` : ''}`;
-  const padded =
-    text.length >= width ? text.slice(0, width) : text + ' '.repeat(width - text.length);
-  return floorBg + hudFg + padded + RESET;
+  if (text.length >= width) return hudFg + text.slice(0, width);
+  const leftPad = Math.floor((width - text.length) / 2);
+  const rightPad = width - text.length - leftPad;
+  // Dot-filled padding so the breathing grid extends through the status row.
+  return dotFg + '.'.repeat(leftPad) + hudFg + text + dotFg + '.'.repeat(rightPad);
 }

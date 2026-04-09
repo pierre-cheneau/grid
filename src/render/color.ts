@@ -23,13 +23,24 @@ import { fnv1a32 } from '../id/hash.js';
  *
  * Same input → same output, on every platform, forever.
  */
+// LRU-bounded cache for rgbFromColorSeed. In a 6-peer game, at most 6 unique
+// seeds are active. The cache avoids re-running FNV + HSV on every cell every frame.
+const rgbCache = new Map<number, readonly [number, number, number]>();
+const RGB_CACHE_MAX = 32;
+
 export function rgbFromColorSeed(seed: number): readonly [number, number, number] {
+  const cached = rgbCache.get(seed);
+  if (cached !== undefined) return cached;
   // Mix the seed once more so adjacent integer seeds (e.g. 0, 1, 2) don't produce
   // adjacent hues. Adjacent FNV outputs are still adjacent, but FNV of small ints
   // is itself well-spread.
   const mixed = fnv1a32(`color:${seed >>> 0}`);
   const hue = (mixed >>> 0) / 0x1_0000_0000; // [0, 1)
-  return hsvToRgb(hue, 1, 1);
+  const result = hsvToRgb(hue, 1, 1);
+  // biome-ignore lint/style/noNonNullAssertion: cache is non-empty when size >= max
+  if (rgbCache.size >= RGB_CACHE_MAX) rgbCache.delete(rgbCache.keys().next().value!);
+  rgbCache.set(seed, result);
+  return result;
 }
 
 /**

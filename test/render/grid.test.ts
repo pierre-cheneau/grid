@@ -8,9 +8,14 @@ import { type Viewport, buildFrame } from '../../src/render/grid.js';
 import { type GridState, type Player, newRng } from '../../src/sim/index.js';
 import { extractCells, stripAnsi } from './extract-cells.js';
 
-const VIEWPORT: Viewport = { cols: 80, rows: 24 };
-
 const cfg = { width: 8, height: 6, halfLifeTicks: 60, seed: 0n };
+
+// Viewport matches grid height exactly (no vertical centering) but is wide
+// enough for the status row text. Cols wider than grid → tests centering.
+const VIEWPORT: Viewport = { cols: 80, rows: cfg.height + 3 };
+
+// Horizontal centering offset: the grid (width+2 = 10 cols) is centered in 80 cols.
+const PAD_X = Math.floor((VIEWPORT.cols - (cfg.width + 2)) / 2);
 
 function makePlayer(id: string, x: number, y: number, overrides: Partial<Player> = {}): Player {
   return {
@@ -45,20 +50,20 @@ describe('buildFrame', () => {
   it('renders the box border on the first and last grid row', () => {
     const rows = buildFrame(emptyState(), VIEWPORT, 'me@host');
     const top = stripAnsi(rows[0] ?? '');
-    assert.ok(top.startsWith('┌'));
-    assert.ok(top.endsWith('┐'));
+    assert.equal(top[PAD_X], '┌');
+    assert.equal(top[PAD_X + cfg.width + 1], '┐');
     const bottom = stripAnsi(rows[cfg.height + 1] ?? '');
-    assert.ok(bottom.startsWith('└'));
-    assert.ok(bottom.endsWith('┘'));
+    assert.equal(bottom[PAD_X], '└');
+    assert.equal(bottom[PAD_X + cfg.width + 1], '┘');
   });
 
   it('renders an empty interior as floor glyphs', () => {
     const rows = buildFrame(emptyState(), VIEWPORT, 'me@host');
     const cells = extractCells(rows);
-    // Interior cells: x in [1..1+width), y in [1..1+height).
+    // Interior cells offset by PAD_X for centering.
     for (let y = 1; y <= cfg.height; y++) {
       for (let x = 1; x <= cfg.width; x++) {
-        assert.equal(cells[y]?.[x], GLYPH_FLOOR, `(${x},${y}) should be floor`);
+        assert.equal(cells[y]?.[PAD_X + x], GLYPH_FLOOR, `(${x},${y}) should be floor`);
       }
     }
   });
@@ -70,8 +75,8 @@ describe('buildFrame', () => {
     };
     const rows = buildFrame(s, VIEWPORT, 'me@host');
     const cells = extractCells(rows);
-    // (3, 2) in grid coords → terminal column 3+1=4, terminal row 2+1=3.
-    assert.equal(cells[3]?.[4], GLYPH_HEAD);
+    // (3, 2) in grid coords → terminal column PAD_X+3+1, terminal row 2+1=3.
+    assert.equal(cells[3]?.[PAD_X + 4], GLYPH_HEAD);
   });
 
   it('does not render a head for a dead player', () => {
@@ -86,7 +91,7 @@ describe('buildFrame', () => {
     // No head glyph anywhere in the interior.
     for (let y = 1; y <= cfg.height; y++) {
       for (let x = 1; x <= cfg.width; x++) {
-        assert.notEqual(cells[y]?.[x], GLYPH_HEAD, `unexpected head at (${x},${y})`);
+        assert.notEqual(cells[y]?.[PAD_X + x], GLYPH_HEAD, `unexpected head at (${x},${y})`);
       }
     }
   });
@@ -102,8 +107,8 @@ describe('buildFrame', () => {
     };
     const rows = buildFrame(s, VIEWPORT, 'me@host');
     const cells = extractCells(rows);
-    // Cell (2, 2) → terminal (3, 3). age = 0 → bucket 0 → freshest glyph.
-    assert.equal(cells[3]?.[3], GLYPH_TRAIL[0]);
+    // Cell (2, 2) → terminal (PAD_X+3, 3). age = 0 → bucket 0 → freshest glyph.
+    assert.equal(cells[3]?.[PAD_X + 3], GLYPH_TRAIL[0]);
   });
 
   it('renders an aged trail cell with the middle bucket glyph', () => {
@@ -118,8 +123,8 @@ describe('buildFrame', () => {
     };
     const rows = buildFrame(s, VIEWPORT, 'me@host');
     const cells = extractCells(rows);
-    // Cell (4, 4) → terminal (5, 5).
-    assert.equal(cells[5]?.[5], GLYPH_TRAIL[2]);
+    // Cell (4, 4) → terminal (PAD_X+5, 5).
+    assert.equal(cells[5]?.[PAD_X + 5], GLYPH_TRAIL[2]);
   });
 
   it('returns a single "terminal too small" row when the viewport is undersized', () => {
