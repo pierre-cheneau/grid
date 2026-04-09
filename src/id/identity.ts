@@ -49,3 +49,11 @@ export function deriveLocalId(now: () => number = Date.now): LocalIdentity {
   const joinedAt = Math.floor(now() / 1000);
   return { id, colorSeed, joinedAt };
 }
+
+/** Append a suffix to an existing identity, re-deriving the colorSeed so that two
+ *  terminals on the same machine with different `--name` flags get distinct colors
+ *  and spawn positions. */
+export function rebaseIdentity(base: LocalIdentity, suffix: string): LocalIdentity {
+  const fullId = `${base.id}-${suffix}`;
+  return { id: fullId, colorSeed: fnv1a32(fullId), joinedAt: base.joinedAt };
+}

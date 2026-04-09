@@ -256,6 +256,65 @@ describe('NetClient integration via MockRoom', () => {
   });
 
   /**
+   * Regression test for the "input pressed late" bug: the local user presses a
+   * turn AFTER the first broadcast for the current tick has already gone out.
+   * Without re-broadcasting on every runOnce, the local peer applies the turn but
+   * the remote peer's buffer still has the empty original — divergence.
+   */
+  it('a turn pressed AFTER the first broadcast still propagates to the other peer', async () => {
+    const net = new MockRoomNetwork();
+    const factory = net.factory();
+    const clock = new FakeClock();
+    const a = new NetClient(
+      {
+        roomKey: 'grid:test',
+        identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
+        initialState: initialState(),
+      },
+      { roomFactory: factory, clock: () => clock.now },
+    );
+    const b = new NetClient(
+      {
+        roomKey: 'grid:test',
+        identity: { id: 'bob@host', colorSeed: 2, joinedAt: 1001 },
+        initialState: initialState(),
+      },
+      { roomFactory: factory, clock: () => clock.now },
+    );
+    await a.start();
+    await b.start();
+
+    const drain = (now: number): void => {
+      let progress = true;
+      while (progress) {
+        progress = false;
+        if (a.runOnce(now) !== null) progress = true;
+        if (b.runOnce(now) !== null) progress = true;
+      }
+    };
+
+    // First drain: both peers broadcast INPUT{tick:1, i:''} for the pending tick.
+    // No tick advance yet (clock=0 < pacing minimum).
+    drain(clock.now);
+    // NOW the user presses a turn — AFTER the empty broadcast went out.
+    a.setLocalInput('L');
+    // Time passes, drain runs the tick advance. Without the fix, A would apply L
+    // locally (via lockstep.localPending) and B would still have alice='' in its
+    // buffer for tick 1, producing different states.
+    for (let i = 0; i < 5; i++) {
+      clock.tick(110);
+      drain(clock.now);
+    }
+    assert.equal(
+      hashState(a.currentState),
+      hashState(b.currentState),
+      'L pressed after first broadcast must still propagate',
+    );
+    await a.stop();
+    await b.stop();
+  });
+
+  /**
    * Regression test for the parser/sender namespace bug: ensures parseMessage
    * does NOT depend on the transport sender id matching the player id, and that
    * NetClient correctly maps opaque session ids to player ids via HELLO.

@@ -59,6 +59,7 @@ describe('Lockstep', () => {
       initialState: makeInitial(),
       clock: clock.read,
     });
+    ls.unpause();
     ls.addPeer('p:b');
     ls.setLocalInput('');
     ls.recordRemoteInput({ v: 1, t: 'INPUT', from: 'p:b', tick: 1, i: '' });
@@ -77,6 +78,7 @@ describe('Lockstep', () => {
       initialState: makeInitial(),
       clock: clock.read,
     });
+    ls.unpause();
     ls.addPeer('p:b');
     ls.setLocalInput('');
     // p:b has not sent yet.
@@ -90,6 +92,7 @@ describe('Lockstep', () => {
       initialState: makeInitial(),
       clock: clock.read,
     });
+    ls.unpause();
     ls.addPeer('p:b');
     ls.setLocalInput('');
     const r = ls.advanceIfReady(clock.now + TICK_DURATION_MS + INPUT_TIMEOUT_MS + 1);
@@ -111,6 +114,8 @@ describe('Lockstep', () => {
       initialState: makeInitial(),
       clock: clockB.read,
     });
+    lsA.unpause();
+    lsB.unpause();
     lsA.addPeer('p:b');
     lsB.addPeer('p:a');
 
@@ -138,6 +143,7 @@ describe('Lockstep', () => {
       initialState: makeInitial(),
       clock: clock.read,
     });
+    ls.unpause();
     ls.addPeer('p:b');
     // way ahead — should be dropped silently
     ls.recordRemoteInput({ v: 1, t: 'INPUT', from: 'p:b', tick: 999, i: 'L' });

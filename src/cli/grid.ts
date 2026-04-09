@@ -16,7 +16,7 @@
 
 import { createWriteStream } from 'node:fs';
 import { argv, exit, pid, stdin, stdout } from 'node:process';
-import { deriveLocalId } from '../id/identity.js';
+import { deriveLocalId, rebaseIdentity } from '../id/identity.js';
 import { TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
@@ -32,10 +32,12 @@ interface CliConfig {
   readonly halfLifeTicks: number;
   readonly name: string | null;
   readonly debug: boolean;
+  readonly relayUrls: ReadonlyArray<string>;
 }
 
 interface RendererHandle {
-  render(state: GridState): void;
+  /** Render the current state, or a "connecting..." placeholder if `state` is null. */
+  render(state: GridState | null, hash?: string): void;
   shutdown(): void;
 }
 
@@ -62,6 +64,7 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
     halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 600,
     name: opts['name'] ?? null,
     debug: opts['debug'] === 'true',
+    relayUrls: opts['relay'] ? opts['relay'].split(',') : [],
   };
 }
 
@@ -114,6 +117,10 @@ function setupRenderer(localId: string): RendererHandle {
     let lastPrinted = 0;
     return {
       render(state) {
+        if (state === null) {
+          stdout.write('connecting...\n');
+          return;
+        }
         if (state.tick - lastPrinted < TICKS_PER_SECOND) return;
         lastPrinted = state.tick;
         stdout.write(`${buildStatusLine(state, localId)}\n`);
@@ -131,8 +138,12 @@ function setupRenderer(localId: string): RendererHandle {
     viewport = { cols: stdout.columns ?? 80, rows: stdout.rows ?? 24 };
   });
   return {
-    render(state) {
-      writer.endFrame(buildFrame(state, viewport, localId));
+    render(state, hash) {
+      if (state === null) {
+        writer.endFrame(['connecting to room...']);
+        return;
+      }
+      writer.endFrame(buildFrame(state, viewport, localId, hash));
     },
     shutdown() {
       writer.shutdown();
@@ -177,14 +188,22 @@ async function main(): Promise<void> {
     process.stderr.write(`grid: debug log → ${path}\n`);
   }
   const baseId = deriveLocalId();
-  const id = cfg.name === null ? baseId : { ...baseId, id: `${baseId.id}-${cfg.name}` };
+  // When `--name <suffix>` is given, re-derive id + colorSeed from the suffixed
+  // name so two terminals on the same machine get distinct colors and spawn positions.
+  const id = cfg.name === null ? baseId : rebaseIdentity(baseId, cfg.name);
   const client = new NetClient(
     {
       roomKey: cfg.room,
       identity: id,
       initialState: makeInitialState(cfg, id.id, id.colorSeed),
     },
-    { roomFactory: createTrysteroRoom, clock: Date.now },
+    {
+      roomFactory: (roomKey, peerId) =>
+        createTrysteroRoom(roomKey, peerId, {
+          relayUrls: cfg.relayUrls.length > 0 ? cfg.relayUrls : undefined,
+        }),
+      clock: Date.now,
+    },
   );
   await client.start();
   const renderer = setupRenderer(id.id);
@@ -192,10 +211,18 @@ async function main(): Promise<void> {
   setupKeyboard(client, shutdown);
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+  let shownConnecting = false;
   setInterval(
     () => {
+      if (client.isPaused) {
+        if (!shownConnecting) {
+          shownConnecting = true;
+          renderer.render(null); // signals "connecting..." to the renderer
+        }
+        return;
+      }
       const result = client.runOnce(Date.now());
-      if (result !== null) renderer.render(result);
+      if (result !== null) renderer.render(result, client.stateHash);
     },
     Math.floor(TICK_DURATION_MS / 2),
   );

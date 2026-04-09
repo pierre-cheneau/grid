@@ -1,19 +1,8 @@
 // Trystero adapter. The ONLY file in the entire codebase that imports from `trystero`.
-// All higher layers (NetClient, lockstep, sync, etc.) talk to this `Room` interface.
+// All higher layers (NetClient, lockstep, sync, etc.) talk to the `Room` interface.
 // Tests inject a MockRoom that implements the same interface without any real WebRTC.
-//
-// The Trystero `joinRoom` returns a "room" with `onPeerJoin`, `onPeerLeave`, and a
-// `makeAction(label)` factory that creates `[send, receive]` pairs per labelled
-// data channel. We negotiate exactly two channels: `ctrl` (reliable, ordered) and
-// `tick` (unreliable, unordered). All other channel labels are reserved for future
-// versions per `docs/architecture/networking.md`.
-//
-// Stage 2 caveat: Trystero doesn't yet support per-channel reliability negotiation in
-// every strategy; for the Nostr/WebRTC strategy, both labelled actions are reliable by
-// default. INPUT loss tolerance is built into the lockstep timeout, so this is benign
-// for v0.1. We can revisit if bandwidth pressure shows up.
 
-import { CHANNEL_CTRL, CHANNEL_TICK } from './constants.js';
+import { CHANNEL_CTRL, CHANNEL_TICK, REJOIN_INTERVAL_MS } from './constants.js';
 import { dbg } from './debug.js';
 
 export interface Room {
@@ -21,23 +10,163 @@ export interface Room {
   onPeerLeave(cb: (peerId: string) => void): void;
   onCtrl(cb: (raw: string, peerId: string) => void): void;
   onTick(cb: (raw: string, peerId: string) => void): void;
-  /** Send on the reliable channel. If `to` is given, send to that peer only. */
   sendCtrl(raw: string, to?: string): void;
-  /** Broadcast on the unreliable channel. */
   sendTick(raw: string): void;
   leave(): Promise<void>;
 }
 
-export type RoomFactory = (roomKey: string, localPeerId: string) => Promise<Room>;
+export interface RoomFactoryOpts {
+  readonly relayUrls?: ReadonlyArray<string> | undefined;
+}
+
+export type RoomFactory = (
+  roomKey: string,
+  localPeerId: string,
+  opts?: RoomFactoryOpts,
+) => Promise<Room>;
+
+// Default relay list. Each relay must: (1) accept WebSocket connections, (2) accept
+// Trystero's custom event kind 22766, (3) not require paid signup or web-of-trust,
+// (4) not aggressively rate-limit. See docs/architecture/networking.md.
+const DEFAULT_RELAYS = [
+  'wss://nos.lol',
+  'wss://relay.primal.net',
+  'wss://relay.notoshi.win',
+  'wss://relay.mostr.pub',
+  'wss://relay.nostr.net',
+];
+
+type Listener = (raw: string, peerId: string) => void;
+type PeerCb = (peerId: string) => void;
 
 /**
- * Default factory: opens a real Trystero/Nostr room. Imported lazily so that test
- * code that injects a MockRoom doesn't pay the trystero load cost.
+ * Wraps a Trystero room with automatic rejoin-on-no-peers. Owns the lifecycle
+ * of the underlying room instance, the data channel actions, and the listener
+ * registrations. Clean up via `leave()`.
  */
-export const createTrysteroRoom: RoomFactory = async (roomKey, localPeerId) => {
+class ResilientRoom implements Room {
+  private trysteroRoom: ReturnType<typeof import('trystero/nostr').joinRoom>;
+  private ctrl: { send: (raw: string, to?: string) => void };
+  private tick: { send: (raw: string) => void };
+  private peerCount = 0;
+  private leaving = false;
+  private rejoinTimer: ReturnType<typeof setInterval>;
+
+  private readonly joinCbs: PeerCb[] = [];
+  private readonly leaveCbs: PeerCb[] = [];
+  private readonly ctrlCbs: Listener[] = [];
+  private readonly tickCbs: Listener[] = [];
+
+  constructor(
+    // biome-ignore lint/suspicious/noExplicitAny: Trystero's joinRoom return type
+    private readonly joinFn: (...args: any[]) => any,
+    // biome-ignore lint/suspicious/noExplicitAny: Trystero room config
+    private readonly roomConfig: any,
+    private readonly roomKey: string,
+  ) {
+    this.trysteroRoom = this.joinFn(this.roomConfig, this.roomKey);
+    const actions = this.negotiateChannels();
+    this.ctrl = actions.ctrl;
+    this.tick = actions.tick;
+    this.attachListeners();
+    dbg('room: joinRoom returned; channels ctrl/tick negotiated');
+
+    this.rejoinTimer = setInterval(() => this.maybeRejoin(), REJOIN_INTERVAL_MS);
+  }
+
+  onPeerJoin(cb: PeerCb): void {
+    this.joinCbs.push(cb);
+  }
+
+  onPeerLeave(cb: PeerCb): void {
+    this.leaveCbs.push(cb);
+  }
+
+  onCtrl(cb: Listener): void {
+    this.ctrlCbs.push(cb);
+  }
+
+  onTick(cb: Listener): void {
+    this.tickCbs.push(cb);
+  }
+
+  sendCtrl(raw: string, to?: string): void {
+    dbg(`room: ctrl send ${to ?? 'broadcast'}: ${raw.slice(0, 100)}`);
+    if (to !== undefined) this.ctrl.send(raw, to);
+    else this.ctrl.send(raw);
+  }
+
+  sendTick(raw: string): void {
+    dbg(`room: tick send: ${raw.slice(0, 100)}`);
+    this.tick.send(raw);
+  }
+
+  async leave(): Promise<void> {
+    this.leaving = true;
+    clearInterval(this.rejoinTimer);
+    dbg('room: leaving');
+    await this.trysteroRoom.leave();
+  }
+
+  // ---- Internal ----
+
+  private negotiateChannels() {
+    const [sCtrl, rCtrl] = this.trysteroRoom.makeAction<string>(CHANNEL_CTRL);
+    const [sTick, rTick] = this.trysteroRoom.makeAction<string>(CHANNEL_TICK);
+    rCtrl((data: string, peerId: string) => {
+      dbg(`room: ctrl recv from ${peerId}: ${String(data).slice(0, 100)}`);
+      for (const cb of this.ctrlCbs) cb(String(data), peerId);
+    });
+    rTick((data: string, peerId: string) => {
+      dbg(`room: tick recv from ${peerId}: ${String(data).slice(0, 100)}`);
+      for (const cb of this.tickCbs) cb(String(data), peerId);
+    });
+    return {
+      ctrl: { send: sCtrl as (raw: string, to?: string) => void },
+      tick: { send: sTick as (raw: string) => void },
+    };
+  }
+
+  private attachListeners(): void {
+    this.trysteroRoom.onPeerJoin((peerId: string) => {
+      dbg(`room: trystero onPeerJoin ${peerId}`);
+      this.peerCount++;
+      clearInterval(this.rejoinTimer);
+      for (const cb of this.joinCbs) cb(peerId);
+    });
+    this.trysteroRoom.onPeerLeave((peerId: string) => {
+      dbg(`room: trystero onPeerLeave ${peerId}`);
+      this.peerCount = Math.max(0, this.peerCount - 1);
+      for (const cb of this.leaveCbs) cb(peerId);
+    });
+  }
+
+  private maybeRejoin(): void {
+    if (this.leaving || this.peerCount > 0) return;
+    dbg('room: no peers connected — rejoining to re-publish presence');
+    this.trysteroRoom
+      .leave()
+      .then(() => {
+        if (this.leaving) return;
+        this.trysteroRoom = this.joinFn(this.roomConfig, this.roomKey);
+        const actions = this.negotiateChannels();
+        this.ctrl = actions.ctrl;
+        this.tick = actions.tick;
+        this.attachListeners();
+        dbg('room: rejoined; channels re-negotiated');
+      })
+      .catch((err: unknown) => {
+        dbg(`room: rejoin failed: ${String(err)}`);
+      });
+  }
+}
+
+/**
+ * Default factory: opens a real Trystero/Nostr room with automatic rejoin.
+ * Imported lazily so test code that injects a MockRoom doesn't pay the load cost.
+ */
+export const createTrysteroRoom: RoomFactory = async (roomKey, localPeerId, opts) => {
   dbg(`room: opening trystero/nostr room "${roomKey}" as ${localPeerId}`);
-  // Lazy import keeps tests isolated and lets bundlers tree-shake. We import the
-  // node-datachannel polyfill the same way: only when a real room is being created.
   const { joinRoom, selfId } = await import('trystero/nostr');
   dbg(`room: trystero loaded; selfId=${String(selfId)}`);
   const polyfillNs = (await import('node-datachannel/polyfill')) as unknown as {
@@ -49,48 +178,9 @@ export const createTrysteroRoom: RoomFactory = async (roomKey, localPeerId) => {
     throw new Error('node-datachannel polyfill missing RTCPeerConnection');
   }
   dbg('room: node-datachannel polyfill loaded');
+  void selfId;
+  const relayUrls = opts?.relayUrls?.length ? [...opts.relayUrls] : DEFAULT_RELAYS;
   // biome-ignore lint/suspicious/noExplicitAny: trystero accepts the polyfill ctor
-  const room = joinRoom({ appId: 'grid', rtcPolyfill: polyfillCtor as any }, roomKey);
-  const [sendCtrl, recvCtrl] = room.makeAction<string>(CHANNEL_CTRL);
-  const [sendTick, recvTick] = room.makeAction<string>(CHANNEL_TICK);
-  dbg('room: joinRoom returned; channels ctrl/tick negotiated');
-
-  void selfId; // referenced to silence the unused warning; consumed by Trystero internally
-
-  const adapter: Room = {
-    onPeerJoin: (cb) =>
-      room.onPeerJoin((peerId) => {
-        dbg(`room: trystero onPeerJoin ${peerId}`);
-        cb(peerId);
-      }),
-    onPeerLeave: (cb) =>
-      room.onPeerLeave((peerId) => {
-        dbg(`room: trystero onPeerLeave ${peerId}`);
-        cb(peerId);
-      }),
-    onCtrl: (cb) =>
-      recvCtrl((data, peerId) => {
-        dbg(`room: ctrl recv from ${peerId}: ${String(data).slice(0, 100)}`);
-        cb(String(data), peerId);
-      }),
-    onTick: (cb) =>
-      recvTick((data, peerId) => {
-        dbg(`room: tick recv from ${peerId}: ${String(data).slice(0, 100)}`);
-        cb(String(data), peerId);
-      }),
-    sendCtrl: (raw, to) => {
-      dbg(`room: ctrl send ${to ?? 'broadcast'}: ${raw.slice(0, 100)}`);
-      if (to !== undefined) sendCtrl(raw, to);
-      else sendCtrl(raw);
-    },
-    sendTick: (raw) => {
-      dbg(`room: tick send: ${raw.slice(0, 100)}`);
-      sendTick(raw);
-    },
-    leave: async () => {
-      dbg('room: leaving');
-      await room.leave();
-    },
-  };
-  return adapter;
+  const roomConfig = { appId: 'grid', rtcPolyfill: polyfillCtor as any, relayUrls };
+  return new ResilientRoom(joinRoom, roomConfig, roomKey);
 };

@@ -47,7 +47,12 @@ export interface Viewport {
   readonly rows: number;
 }
 
-export function buildFrame(state: GridState, viewport: Viewport, localId: PlayerId): string[] {
+export function buildFrame(
+  state: GridState,
+  viewport: Viewport,
+  localId: PlayerId,
+  hash?: string,
+): string[] {
   const w = state.config.width;
   const h = state.config.height;
   const needCols = w + FRAME_OVERHEAD_COLS;
@@ -77,7 +82,7 @@ export function buildFrame(state: GridState, viewport: Viewport, localId: Player
   rows.push(floorBg + wall + BOX_BOTTOM_LEFT + BOX_HORIZONTAL.repeat(w) + BOX_BOTTOM_RIGHT + RESET);
 
   // Status row — uses the full viewport width since it sits below the frame.
-  rows.push(buildStatusRow(state, localId, viewport.cols, floorBg, hudFg));
+  rows.push(buildStatusRow(state, localId, viewport.cols, floorBg, hudFg, hash));
 
   return rows;
 }
@@ -137,6 +142,7 @@ function buildStatusRow(
   width: number,
   floorBg: string,
   hudFg: string,
+  hash?: string,
 ): string {
   const me = state.players.get(localId);
   const tick = state.tick.toString().padStart(4, '0');
@@ -145,7 +151,7 @@ function buildStatusRow(
   const alive = me?.isAlive ? 'Y' : 'N';
   const score = me?.score ?? 0;
   const peers = state.players.size;
-  const text = `t=${tick} me=${pos} dir=${dir} peers=${peers} alive=${alive} score=${score}`;
+  const text = `t=${tick} me=${pos} dir=${dir} peers=${peers} alive=${alive} score=${score}${hash ? ` hash=${hash}` : ''}`;
   const padded =
     text.length >= width ? text.slice(0, width) : text + ' '.repeat(width - text.length);
   return floorBg + hudFg + padded + RESET;

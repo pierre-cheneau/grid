@@ -37,6 +37,31 @@ export const MAX_SNAPSHOT_MESSAGE_BYTES = 4 * 1024 * 1024;
 /** Daily room key prefix. */
 export const ROOM_PREFIX = 'grid:';
 
+/** Time to wait for a peer connection before unpausing as the seed player. Overlaps
+ *  with the WebRTC handshake (~1.5-2s) and the future intro animation (~1.5s). */
+export const SEED_TIMEOUT_MS = 3000;
+
+/** If the wall-clock jumps by more than this between two runOnce calls, the process
+ *  was likely frozen (Windows Quick Edit, laptop sleep, debugger breakpoint). The
+ *  lockstep should pause and re-sync from the senior peer.
+ *
+ *  Set high enough to avoid false positives from Trystero's relay error handling
+ *  (rate-limit retries, connection resets) which can stall the Node event loop
+ *  for 1-3 seconds. A real user-initiated freeze (click on Windows terminal,
+ *  laptop lid close) is typically 5+ seconds. */
+export const FREEZE_THRESHOLD_MS = 5000;
+
+/** After this many consecutive ticks where a peer's input was defaulted to '' via
+ *  timeout, stop waiting for them entirely (instant default, zero extra wait).
+ *  Their cycle drifts straight on autopilot at full 10 tps. Keeps the game fluid
+ *  for everyone else. The peer re-syncs via STATE_REQUEST when they recover. */
+export const CONSECUTIVE_TIMEOUT_THRESHOLD = 3;
+
+/** If no peers are connected after this many ms, leave and rejoin the room to
+ *  force Trystero to re-publish presence to the Nostr relays. Repeated every
+ *  REJOIN_INTERVAL_MS until a peer connects. */
+export const REJOIN_INTERVAL_MS = 10_000;
+
 /** Trystero channel labels. */
 export const CHANNEL_CTRL = 'ctrl' as const;
 export const CHANNEL_TICK = 'tick' as const;

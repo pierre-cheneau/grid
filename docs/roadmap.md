@@ -67,7 +67,7 @@ That is the entire v0.1 bar. Anything beyond is bonus and should be deferred.
 
 Implementation should proceed in stages, each stage producing testable working software. Stage N must work before stage N+1 begins. Out-of-order work creates dependencies that bite later.
 
-### Stage 1: determinism core
+### Stage 1: determinism core ✅
 
 Pure logic, no networking, no UI, no terminal.
 
@@ -81,18 +81,22 @@ Pure logic, no networking, no UI, no terminal.
 
 **Done when:** the simulation runs in a Node REPL and produces deterministic state across two machines.
 
-### Stage 2: terminal renderer
+**Shipped.** Cross-platform hash `36f5919d650009ef` verified on Linux + Windows CI. 74 tests (unit + 6 properties + pinned scenario).
+
+### Stage 2: terminal renderer ✅
 
 Reads simulation state, draws to terminal. No interactivity yet.
 
-- Set up the chosen TUI library (recommended: Ink or blessed).
+- ~~Set up the chosen TUI library (recommended: Ink or blessed).~~ Hand-rolled ANSI escapes, zero deps.
 - Implement the box-drawing renderer for the grid floor.
-- Implement cycle rendering with hashed RGB colors.
-- Implement trail rendering with decay-aware character/color fading.
-- Implement HUD elements (player name, score).
-- Wire the renderer to a fake state stream so it animates.
+- Implement cycle rendering with hashed RGB colors (neon-bright from colorSeed).
+- Implement trail rendering with decay-aware character/color fading (`█▓▒░` + fade toward black).
+- Implement HUD elements (player name, score, tick, hash).
+- Wire the renderer to the NetClient state stream so it animates at 10fps.
 
 **Done when:** a hardcoded simulation plays back visually in a terminal at 10fps.
+
+**Shipped.** Built out of roadmap order (after Stage 5) so netcode could be validated visually. Alt-screen mode, synchronized output, TTY fallback for piped output. 165 tests total.
 
 ### Stage 3: local pilot mode
 
@@ -118,18 +122,23 @@ Add the digitization ritual and the identity model.
 
 **Done when:** the launch and exit experience feels like a place you visit, not a program you run.
 
-### Stage 5: P2P netcode
+### Stage 5: P2P netcode ✅
 
 Trystero, Nostr, lockstep, state hashes.
 
-- Set up Trystero with the Nostr strategy and the daily room key.
+- Set up Trystero with the Nostr strategy and the daily room key. `node-datachannel` polyfill for Node.
 - Implement the wire protocol message types (`HELLO`, `INPUT`, `STATE_HASH`, `STATE_REQUEST`, etc.).
-- Implement lockstep input collection: wait for all peers' inputs each tick.
-- Implement state-hash broadcasting and cross-checking.
-- Implement peer eviction by EVICT vote.
-- Implement joiner sync via STATE_REQUEST / STATE_RESPONSE.
+- Implement lockstep input collection: wall-clock paced at 10 tps, 150ms timeout for missing inputs.
+- Implement consecutive-timeout auto-default (3 missed ticks → instant default, full-speed game for everyone else).
+- Implement freeze detection + STATE_REQUEST re-sync (Windows Quick Edit, laptop sleep).
+- Implement state-hash broadcasting and cross-checking every 30 ticks.
+- Implement peer eviction by EVICT vote (strict majority quorum).
+- Implement joiner sync via STATE_REQUEST / STATE_RESPONSE (base64 of canonical bytes).
+- Implement connection phase: lockstep starts paused; junior waits for snapshot; senior unpauses on HELLO; seed timeout for solo play.
 
 **Done when:** two players on different machines see each other's cycles in real-time and one can derez the other.
+
+**Shipped.** Built second (before Stage 2) to lock the deterministic netcode foundation. Two-terminal lockstep verified hash-identical at every tick. Immediate-broadcast-on-keypress eliminates the input-race divergence. 165 tests including in-process MockRoom integration.
 
 ### Stage 6: persistence within the day
 
@@ -213,8 +222,24 @@ Rough sketch of v0.2 priorities, in order:
 3. **The `npx grid forge` LLM authoring command** (BYOK, sandbox, refinement). Ships alongside the daemon bridge — they are useless without each other. See [`design/forge.md`](design/forge.md).
 4. The public archive in a git repo.
 5. Replay sharing.
-6. Cross-neighborhood gossip.
+6. Cross-neighborhood gossip (CRDT-based summary data between siblings).
 7. TURN fallback.
 8. The `uvx grid` Python port.
 
 But this list is provisional. v0.2 priorities should be set by **what real players ask for after v0.1 ships**, not by what the spec predicts. Listen to the first hundred players. They will tell you what GRID actually is.
+
+### Discovery scaling ladder
+
+The discovery layer scales incrementally without rewrites. Each step is additive — the `Room` abstraction in `src/net/room.ts` isolates the discovery mechanism from all game logic.
+
+| Version | Discovery mechanism | Capacity |
+|---|---|---|
+| **v0.1** | 5 pinned Nostr relays + `--relay` override | ~50 concurrent players, ~8 neighborhoods |
+| **v0.2** | + relay sharding by topic prefix + gossip heartbeats between siblings | ~500 players |
+| **v0.3** | + DHT discovery (Kademlia via libp2p); Nostr relays become optional bootstrap | Thousands+ |
+
+At every tier, GRID authors operate zero infrastructure. Nostr relays are third-party; DHT bootstrap nodes can be community-run. The `--relay` flag ensures players are never locked out.
+
+### Dynamic neighborhood meshing
+
+The neighborhood lifecycle (create/grow/split/merge/destroy from the networking spec) is designed for fully decentralized coordination. The key property: **all peers independently run the same deterministic algorithm on the same state**, so they arrive at the same split/merge decision without a coordinator — identical to how `simulateTick` produces identical results on every peer. The canonical byte serialization (`canonicalBytes`) is the universal state transfer format for migration between neighborhoods.
