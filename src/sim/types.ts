@@ -47,6 +47,9 @@ export interface Cell {
   readonly type: CellType;
   readonly ownerId: PlayerId;
   readonly createdAtTick: Tick;
+  /** Visual identity of the cell's creator, stored on the cell so orphaned trails
+   *  keep their color after the owner disconnects. */
+  readonly colorSeed: number;
 }
 
 /** A cycle (player or daemon) inhabiting the grid. */
@@ -69,6 +72,9 @@ export interface Config {
   readonly height: number;
   readonly halfLifeTicks: number;
   readonly seed: bigint;
+  /** When true, the playable area is a circle inscribed in the width×height
+   *  rectangle. Positions in the corners are out of bounds. */
+  readonly circular: boolean;
 }
 
 /**

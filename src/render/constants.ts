@@ -11,6 +11,18 @@
 export const GLYPH_HEAD = '█';
 
 /**
+ * Directional head glyphs for the local player's cycle. Indexed by `Direction`
+ * (0=N, 1=E, 2=S, 3=W). Each entry is a [left, right] pair that together form
+ * a composed arrow. Uses ASCII characters for maximum cross-platform safety.
+ */
+export const GLYPH_LOCAL_HEAD: readonly (readonly [string, string])[] = [
+  ['/', '\\'], // North — /\
+  ['>', '>'], //  East  — >>
+  ['\\', '/'], // South — \/
+  ['<', '<'], //  West  — <<
+];
+
+/**
  * Trail glyphs in descending freshness order. Index 0 is freshest (right behind
  * the head); index 3 is the dimmest, just before removal. `identity-and-aesthetic.md`
  * §52: "trailing cell behind the head is `▓` (slightly dimmer) ... older trail cells
@@ -49,19 +61,6 @@ export const COLOR_WARN: readonly [number, number, number] = [0xff, 0x00, 0xff];
  * width of `GLYPH_TRAIL`. Changing this number requires updating both.
  */
 export const DECAY_BUCKETS = 4 as const;
-
-/**
- * Minimum extra rows the renderer needs around the play area:
- *   1 top border + 1 bottom border + 1 status row = 3.
- * Used by `buildFrame` to decide if the viewport is large enough.
- */
-export const FRAME_OVERHEAD_ROWS = 3 as const;
-
-/**
- * Minimum extra columns the renderer needs around the play area:
- *   1 left border + 1 right border = 2.
- */
-export const FRAME_OVERHEAD_COLS = 2 as const;
 
 /** Hidden messages that appear 1-in-100 plays during the intro pause phase. */
 export const HIDDEN_MESSAGES: readonly string[] = [

@@ -15,7 +15,7 @@
 
 import type { Cell, CellType, Config, GridState, Player, PlayerId, Tick } from './types.js';
 
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const MAGIC_BYTES = [0x47, 0x52, 0x49, 0x44]; // "GRID"
 
 const CELL_TYPE_FROM_TAG: ReadonlyArray<CellType> = ['trail', 'wall'];
@@ -112,6 +112,7 @@ export function parseCanonicalBytes(bytes: Uint8Array): GridState {
     height: r.u16(),
     halfLifeTicks: r.u32(),
     seed: r.u64(),
+    circular: r.u8() === 1,
   };
 
   const rngState = r.u64();
@@ -159,7 +160,8 @@ export function parseCanonicalBytes(bytes: Uint8Array): GridState {
     if (type === undefined) throw new Error(`deserialize: bad cell type tag ${typeTag}`);
     const ownerId = r.lenString();
     const createdAtTick = r.u32();
-    cells.set(key, { type, ownerId, createdAtTick });
+    const colorSeed = r.u32();
+    cells.set(key, { type, ownerId, createdAtTick, colorSeed });
   }
 
   if (r.remaining !== 0) {

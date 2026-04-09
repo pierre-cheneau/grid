@@ -7,7 +7,7 @@ export { tryMaximize } from './ansi.js';
 export { renderEpitaph } from './epitaph.js';
 export type { EpitaphData } from './epitaph.js';
 export { buildFrame } from './grid.js';
-export type { Viewport } from './grid.js';
+export type { Camera, Viewport } from './grid.js';
 export { introFrame, playIntro, INTRO_DURATION_MS } from './intro.js';
 export type { IntroConfig } from './intro.js';
 export { createSessionTracker } from './session.js';

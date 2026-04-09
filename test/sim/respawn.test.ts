@@ -6,7 +6,7 @@ import { pickSpawnCell } from '../../src/sim/respawn.js';
 import { newRng } from '../../src/sim/rng.js';
 import type { Cell, Config } from '../../src/sim/types.js';
 
-const cfg: Config = { width: 8, height: 8, halfLifeTicks: 60, seed: 0n };
+const cfg: Config = { width: 8, height: 8, halfLifeTicks: 60, seed: 0n, circular: false };
 
 describe('pickSpawnCell', () => {
   it('is deterministic for a fixed seed', () => {
@@ -31,7 +31,7 @@ describe('pickSpawnCell', () => {
         if (x === 7 && y === 7) continue;
         cells.set(
           `${y.toString(16).toUpperCase().padStart(4, '0')}${x.toString(16).toUpperCase().padStart(4, '0')}`,
-          { type: 'trail', ownerId: 'p:x', createdAtTick: 0 },
+          { type: 'trail', ownerId: 'p:x', createdAtTick: 0, colorSeed: 0 },
         );
       }
     }

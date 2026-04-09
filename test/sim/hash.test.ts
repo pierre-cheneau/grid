@@ -14,7 +14,13 @@ import { describe, it } from 'node:test';
 import { hashState } from '../../src/sim/hash.js';
 import type { Cell, Config, GridState, Player } from '../../src/sim/types.js';
 
-const cfg: Config = { width: 32, height: 16, halfLifeTicks: 60, seed: 0xc0ffee_deadbeefn };
+const cfg: Config = {
+  width: 32,
+  height: 16,
+  halfLifeTicks: 60,
+  seed: 0xc0ffee_deadbeefn,
+  circular: false,
+};
 
 const knownPlayer: Player = {
   id: 'p:alice',
@@ -30,6 +36,7 @@ const knownCell: Cell = {
   type: 'trail',
   ownerId: 'p:alice',
   createdAtTick: 1,
+  colorSeed: 0x1234_5678,
 };
 
 function knownState(): GridState {
@@ -72,6 +79,6 @@ describe('hashState', () => {
 
   // PINNED VECTOR — the canary for the entire canonical format.
   it('produces the pinned hash for the known state', () => {
-    assert.equal(hashState(knownState()), 'dd408dd20a84e132');
+    assert.equal(hashState(knownState()), '4ee86c86573a13e0');
   });
 });

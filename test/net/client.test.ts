@@ -13,7 +13,7 @@ import {
 } from '../../src/sim/index.js';
 import { MockRoomNetwork } from './mock-room.js';
 
-const cfg: Config = { width: 24, height: 24, halfLifeTicks: 60, seed: 0xc0ffeen };
+const cfg: Config = { width: 24, height: 24, halfLifeTicks: 60, seed: 0xc0ffeen, circular: false };
 
 function initialState(): GridState {
   const a: Player = {

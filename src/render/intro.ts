@@ -15,46 +15,27 @@
 
 import { RESET, moveTo } from './ansi.js';
 import { ansiBg, ansiFg } from './color.js';
-import {
-  BOX_BOTTOM_LEFT,
-  BOX_BOTTOM_RIGHT,
-  BOX_HORIZONTAL,
-  BOX_TOP_LEFT,
-  BOX_TOP_RIGHT,
-  BOX_VERTICAL,
-  COLOR_FLOOR,
-  COLOR_INTRO,
-  COLOR_WALL,
-  GLYPH_HEAD,
-  HIDDEN_MESSAGES,
-} from './constants.js';
+import { COLOR_FLOOR, COLOR_INTRO, COLOR_WALL, GLYPH_HEAD, HIDDEN_MESSAGES } from './constants.js';
 import type { AnsiWriter } from './writer.js';
 
-export const INTRO_DURATION_MS = 12000;
+export const INTRO_DURATION_MS = 11000;
 
 const FRAME_INTERVAL_MS = 50; // ~20fps
 
-// Phase timing (ms). Grid draw starts at 80% through the vortex — the border
-// begins assembling while the last tornado particles are still exiting, creating
-// a seamless overlap instead of a dead pause between phases.
+// Phase timing (ms). No grid-draw phase — the vortex opens directly onto the
+// world, and the cycle spawns at screen center.
 const CURSOR_END = 1500;
 const TYPING_START = 1500;
 const TYPING_END = 2500;
 const VORTEX_START = 5500; // after the 3s dramatic pause
 const VORTEX_END = 10500; // 5s for the tornado
-const GRID_DRAW_START = 9500; // 80% through vortex
-const GRID_DRAW_END = 10500;
-const SPAWN_START = 10500;
-const SPAWN_END = 11500;
+const SPAWN_START = 9500; // overlaps with vortex exit
+const SPAWN_END = 10500;
 
 export interface IntroConfig {
   readonly cols: number;
   readonly rows: number;
   readonly identity: string;
-  readonly spawnX: number;
-  readonly spawnY: number;
-  readonly gridW: number;
-  readonly gridH: number;
   readonly identityColor: readonly [number, number, number];
 }
 
@@ -175,12 +156,7 @@ export function introFrame(
     );
   }
 
-  // --- Phase 6: Grid border draws itself ---
-  if (t >= GRID_DRAW_START) {
-    renderGridDrawPhase(config, t, cols, rows, overlay);
-  }
-
-  // --- Phase 7: Cycle spawns ---
+  // --- Phase 7: Cycle spawns at screen center ---
   if (t >= SPAWN_START) {
     renderSpawnPhase(config, t, cols, rows, overlay);
   }
@@ -303,36 +279,6 @@ function renderTornadoPhase(
   return formed ? Math.max(0, minOnScreenRadius - 2) : 0;
 }
 
-function renderGridDrawPhase(
-  config: IntroConfig,
-  t: number,
-  cols: number,
-  rows: number,
-  overlay: Map<string, string>,
-): void {
-  const p = Math.min(1, (t - GRID_DRAW_START) / (GRID_DRAW_END - GRID_DRAW_START));
-  const wallFg = ansiFg(COLOR_WALL[0], COLOR_WALL[1], COLOR_WALL[2]);
-  const gx = Math.floor((cols - (config.gridW + 2)) / 2);
-  const gy = Math.floor((rows - (config.gridH + 3)) / 2);
-  const topN = Math.floor(Math.min(1, p * 3) * (config.gridW + 2));
-  if (topN > 0) overlay.set(`${gy},${gx}`, wallFg + BOX_TOP_LEFT);
-  for (let i = 1; i < topN - 1 && i <= config.gridW; i++)
-    overlay.set(`${gy},${gx + i}`, wallFg + BOX_HORIZONTAL);
-  if (topN >= config.gridW + 2)
-    overlay.set(`${gy},${gx + config.gridW + 1}`, wallFg + BOX_TOP_RIGHT);
-  const sideN = Math.floor(Math.min(1, Math.max(0, p * 3 - 1)) * config.gridH);
-  for (let i = 1; i <= sideN; i++) {
-    overlay.set(`${gy + i},${gx}`, wallFg + BOX_VERTICAL);
-    overlay.set(`${gy + i},${gx + config.gridW + 1}`, wallFg + BOX_VERTICAL);
-  }
-  const botN = Math.floor(Math.min(1, Math.max(0, p * 3 - 2)) * (config.gridW + 2));
-  if (botN > 0) overlay.set(`${gy + config.gridH + 1},${gx}`, wallFg + BOX_BOTTOM_LEFT);
-  for (let i = 1; i < botN - 1 && i <= config.gridW; i++)
-    overlay.set(`${gy + config.gridH + 1},${gx + i}`, wallFg + BOX_HORIZONTAL);
-  if (botN >= config.gridW + 2)
-    overlay.set(`${gy + config.gridH + 1},${gx + config.gridW + 1}`, wallFg + BOX_BOTTOM_RIGHT);
-}
-
 function renderSpawnPhase(
   config: IntroConfig,
   t: number,
@@ -341,17 +287,17 @@ function renderSpawnPhase(
   overlay: Map<string, string>,
 ): void {
   const p = Math.min(1, (t - SPAWN_START) / (SPAWN_END - SPAWN_START));
-  const gx = Math.floor((cols - (config.gridW + 2)) / 2);
-  const gy = Math.floor((rows - (config.gridH + 3)) / 2);
-  const sx = gx + 1 + config.spawnX;
-  const sy = gy + 1 + config.spawnY;
-  if (sy >= 0 && sy < rows && sx >= 0 && sx < cols) {
+  // Spawn at screen center — double-wide to match the game renderer (2 chars/cell).
+  const sx = Math.floor(cols / 2) - 1;
+  const sy = Math.floor(rows / 2);
+  if (sy >= 0 && sy < rows && sx >= 0 && sx + 1 < cols) {
     const fg = ansiFg(
       Math.round(lerp(COLOR_INTRO[0], config.identityColor[0], p)),
       Math.round(lerp(COLOR_INTRO[1], config.identityColor[1], p)),
       Math.round(lerp(COLOR_INTRO[2], config.identityColor[2], p)),
     );
     overlay.set(`${sy},${sx}`, fg + GLYPH_HEAD);
+    overlay.set(`${sy},${sx + 1}`, fg + GLYPH_HEAD);
   }
 }
 

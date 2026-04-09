@@ -14,14 +14,14 @@ The v0.1 goal is **a single demonstrable build that contains the soul of the GRI
 | Digitization intro animation, doubling as connection wait | The threshold ritual. Non-skippable. |
 | Pilot mode with arrow-key cycle controls | The primary verb. |
 | 90-second informal session loop with instant respawn | The coffee-break shape. |
-| Box-drawing + 24-bit ANSI color renderer, top-down view | The aesthetic. |
+| Viewport camera + 24-bit ANSI color renderer, top-down view | The aesthetic. |
 | WebRTC peer connection via Trystero (Nostr strategy) | The decentralization. |
 | Lockstep deterministic simulation | The foundation. Everything binds to this. |
 | State-hash cross-checking with peer eviction | The anti-cheat / consistency. |
-| One global daily room (`grid:YYYY-MM-DD-UTC`) | The shared place. |
+| One global daily world (`grid:YYYY-MM-DD`), sized by yesterday's population | The shared place. |
 | Up to 6 peers per neighborhood, auto-shunt to siblings | The mesh limit. |
 | Player identity from `${USER}@${HOSTNAME}` with hashed color | The identity model. |
-| Persistent grid state across rounds within the day | The "place not match" feeling. |
+| Persistent grid state via Nostr + local backup, survives peer-free gaps | The "place not match" feeling. |
 | Decay physics (first-guess calibration) | The breathing world. |
 | Midnight UTC reset with local recap | The daily ritual. |
 | Exit epitaph in shell scrollback | The session closure. |
@@ -142,13 +142,22 @@ Trystero, Nostr, lockstep, state hashes.
 
 ### Stage 6: persistence within the day
 
-Cells persist across rounds. Decay runs continuously. The grid feels like a place.
+The world becomes a living place that remembers. Four deliverables:
 
-- Verify that the existing simulation already does this (it should — the simulation is continuous, only cycles respawn).
-- Tune decay rate by playing with friends.
-- Verify that trails left by exited players persist and decay normally.
+**6a. Self-describing cells (FORMAT_VERSION 2).** Add `colorSeed` to the `Cell` type so orphaned trails keep their identity color. Update canonical serialization, determinism hash, all pinned tests.
 
-**Done when:** the grid you arrive in is shaped by what other people did before you.
+**6b. Time-anchored ticks.** Anchor tick numbers to real time via `tickAtTime(now, dayStartMs)`. The lockstep paces toward the real-time target. Cells decay whether or not anyone is online.
+
+**6c. Viewport camera.** The world is larger than the terminal. The camera follows the player's cycle. The world scrolls. World boundary rendered as cyan wall when visible; void (black) beyond. No bordered rectangle — the player IS inside the grid. Intro Phase 6 (grid-draw) removed; the vortex transitions directly into the world.
+
+**6d. Persistence layer (`src/persist/`).** Compact binary cell snapshots (14 bytes/cell), compressed. Published to Nostr on shutdown + periodic. Local backup to `~/.grid/`. Cold-start reconstruction from Nostr or local file with real-time decay applied. Hash chain published every 300 ticks for cryptographic integrity. Nostr keypair in identity cache. World config event published at midnight.
+
+- Benchmark compression algorithms (gzip, brotli, raw deflate) on cell data and select the best.
+- Verify trails from exited players persist and keep their color.
+- Verify cold start with Nostr persistence reconstructs the world correctly.
+- Verify the hash chain is verifiable across independent signers.
+
+**Done when:** the grid you arrive in is shaped by what other people did before you — even if no one has been online for an hour.
 
 ### Stage 7: midnight reset and local recap
 

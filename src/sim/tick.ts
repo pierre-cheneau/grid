@@ -101,6 +101,7 @@ export function simulateTick(prev: GridState, inputs: Inputs): GridState {
         type: 'trail',
         ownerId: id,
         createdAtTick: nextTick,
+        colorSeed: player.colorSeed,
       });
       players.set(id, { ...player, pos: m.to });
     } else {

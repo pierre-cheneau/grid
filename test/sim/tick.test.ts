@@ -73,7 +73,9 @@ describe('simulateTick', () => {
     const cfg = makeConfig({ width: 16, height: 16 });
     const s: GridState = {
       ...withPlayers(emptyState(cfg), [makePlayer('p:a', 10, 10, 1), makePlayer('p:b', 2, 5, 1)]),
-      cells: new Map([['00050003', { type: 'trail', ownerId: 'p:a', createdAtTick: 0 }]]),
+      cells: new Map([
+        ['00050003', { type: 'trail', ownerId: 'p:a', createdAtTick: 0, colorSeed: 0 }],
+      ]),
     };
     const s1 = simulateTick(s, noInputs);
     assert.equal(s1.players.get('p:b')?.isAlive, false);

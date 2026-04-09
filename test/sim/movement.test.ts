@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { resolveMoves } from '../../src/sim/movement.js';
 import type { Cell, Config, Direction, Player } from '../../src/sim/types.js';
 
-const cfg: Config = { width: 10, height: 10, halfLifeTicks: 60, seed: 0n };
+const cfg: Config = { width: 10, height: 10, halfLifeTicks: 60, seed: 0n, circular: false };
 
 function p(id: string, x: number, y: number, dir: Direction): Player {
   return {
@@ -23,6 +23,7 @@ const trail = (ownerId: string, createdAtTick = 0): Cell => ({
   type: 'trail',
   ownerId,
   createdAtTick,
+  colorSeed: 0,
 });
 
 describe('resolveMoves', () => {

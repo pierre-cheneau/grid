@@ -2,7 +2,7 @@
 //
 // The headline property: for any state s, parseCanonicalBytes(canonicalBytes(s)) is a
 // state s' whose canonicalBytes is byte-identical to the original. The Stage 1 hash
-// `36f5919d650009ef` MUST remain stable through this round trip.
+// `394eb2d138351fed` MUST remain stable through this round trip.
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
@@ -15,7 +15,13 @@ import { canonicalBytes } from '../../src/sim/serialize.js';
 import { simulateTick } from '../../src/sim/tick.js';
 import type { Cell, Config, GridState, Player } from '../../src/sim/types.js';
 
-const cfg: Config = { width: 16, height: 16, halfLifeTicks: 30, seed: 0xdeadbeefn };
+const cfg: Config = {
+  width: 16,
+  height: 16,
+  halfLifeTicks: 30,
+  seed: 0xdeadbeefn,
+  circular: false,
+};
 
 function makeState(): GridState {
   const players = new Map<string, Player>([
@@ -45,8 +51,8 @@ function makeState(): GridState {
     ],
   ]);
   const cells = new Map<string, Cell>([
-    ['00050003', { type: 'trail', ownerId: 'p:alice', createdAtTick: 1 }],
-    ['00070005', { type: 'trail', ownerId: 'p:bob', createdAtTick: 2 }],
+    ['00050003', { type: 'trail', ownerId: 'p:alice', createdAtTick: 1, colorSeed: 0xa11ce }],
+    ['00070005', { type: 'trail', ownerId: 'p:bob', createdAtTick: 2, colorSeed: 0xb0b }],
   ]);
   return {
     tick: 42,
@@ -82,7 +88,7 @@ describe('parseCanonicalBytes', () => {
     const final = runScenario();
     const bytes = canonicalBytes(final);
     const round = parseCanonicalBytes(bytes);
-    assert.equal(hashState(round), '36f5919d650009ef');
+    assert.equal(hashState(round), 'c599d1866c56a9c9');
   });
 
   it('rejects bad magic', () => {

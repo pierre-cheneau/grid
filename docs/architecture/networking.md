@@ -143,6 +143,23 @@ In v0.1 this routing is simple and centralized in the client logic. In v0.2 it b
 - A neighborhood is *merged* with a sibling when it shrinks below 3 and a sibling has space.
 - A neighborhood is *destroyed* when its last peer leaves. (Its persistent state — the cells in its region — is gossiped to a sibling neighborhood before destruction so the grid does not lose state.)
 
+## Time-anchored ticks
+
+The simulation's tick number is derived from real time:
+
+```
+dayStartMs = midnight UTC today, in milliseconds
+tickAtTime(t) = floor((t - dayStartMs) / TICK_DURATION_MS)
+```
+
+This anchoring means the lockstep targets the real-time tick rather than advancing at an arbitrary pace. During active play, the pacing is identical to before (10 tps). The difference is that the tick NUMBER corresponds to a specific moment in the day, so:
+
+- Cells decay in real time even when no peers are online.
+- A returning peer knows the correct tick from the wall clock alone.
+- Cross-room coordination (v0.2) is trivial — all rooms use the same clock.
+
+The simulation core (`src/sim/`) remains pure — it doesn't know about wall clocks. The networking layer enforces the alignment. See [`persistence.md`](persistence.md) for the full time-anchored persistence model.
+
 ## Connection phase
 
 The time between `npx grid` and "you are playing" has specific behavior that prevents state divergence:
@@ -153,18 +170,19 @@ The time between `npx grid` and "you are playing" has specific behavior that pre
    - The **junior** stays paused, sends `STATE_REQUEST`, receives `STATE_RESPONSE` (a base64-encoded canonical snapshot), installs it, and unpauses. Both peers are now at the same tick with identical state.
 3. **If no peer connects within 8 seconds** (the seed timeout), the player is the seed of a new neighborhood. The lockstep unpauses and they tick alone. Late joiners sync to them via the same STATE_REQUEST/RESPONSE flow.
 
-This phase replaces the future intro animation (Stage 4). The intro animation will be calibrated to overlap exactly with the WebRTC handshake so the ritual IS the connection wait.
+The intro animation overlaps with the WebRTC handshake so the ritual IS the connection wait. See [`../design/identity-and-aesthetic.md`](../design/identity-and-aesthetic.md) for the animation details.
 
 ## Cold-start handling
 
 A first-time player on day one with nobody else online sees an empty discovery channel. GRID handles this by:
 
 1. The client connects to Nostr relays and looks for active neighborhoods.
-2. Finding none, it creates the first neighborhood and waits (the "connecting..." screen).
-3. After the seed timeout (~8s), the lockstep unpauses and the grid is rendered as empty but functional. The player can drive their cycle alone for as long as they want.
-4. When a second player arrives, the discovery layer connects them and the junior installs the senior's state via STATE_REQUEST/STATE_RESPONSE.
+2. Finding none, it fetches the latest cell snapshot from Nostr (if available) and reconstructs the world with real-time decay applied. If no snapshot exists, the grid starts empty.
+3. The client creates the first neighborhood and waits during the intro animation (~12s).
+4. After the seed timeout, the lockstep unpauses at `tickAtTime(now)` — the simulation's tick is anchored to real time. The player enters a world that may already contain decaying trails from earlier sessions.
+5. When a second player arrives, the discovery layer connects them and the junior installs the senior's state via STATE_REQUEST/STATE_RESPONSE.
 
-Empty grids are not failure states. They are how the world starts each day in low-population periods.
+Empty grids are not failure states. They are how the world starts each day in low-population periods. But a grid with decaying trails from earlier players is the *expected* state — the world remembers.
 
 ## Failure modes
 
@@ -176,7 +194,7 @@ Honest list of what can go wrong:
 - **Lockstep stalls because one peer is temporarily slow.** The lockstep waits up to 150ms (`INPUT_TIMEOUT_MS`) past the tick deadline, then defaults the missing peer's input to `''` (straight, no turn). After 3 consecutive timeouts for the same peer (`CONSECUTIVE_TIMEOUT_THRESHOLD`), that peer is **auto-defaulted with zero wait** on all subsequent ticks — the game runs at full 10 tps for everyone else while the slow peer's cycle drifts straight on autopilot. This is softer than immediate eviction and handles transient slowness gracefully.
 - **A peer's process freezes (Windows Quick Edit, laptop sleep, debugger).** If the wall-clock jumps by more than 2 seconds (`FREEZE_THRESHOLD_MS`) between two `runOnce` calls, the client detects a freeze, pauses its own lockstep, and sends `STATE_REQUEST` to the most-senior peer. The senior responds with a fresh snapshot and the frozen peer re-syncs — identical to the joiner flow. The non-frozen peers were running at full speed the entire time (via auto-default) so no one was impacted.
 - **State hash mismatch.** A peer's state hash diverges from the others. That peer is evicted and asked to re-sync from a known-good peer. If it cannot, it is dropped.
-- **All peers in a neighborhood disconnect simultaneously.** The neighborhood ceases to exist. Its persistent state is lost unless it had time to gossip to a sibling. v0.2 mitigates this with periodic gossip checkpoints.
+- **All peers in a neighborhood disconnect simultaneously.** The last peer publishes a cell snapshot to Nostr and writes a local backup before exiting. The next peer to arrive reconstructs the world from the snapshot with real-time decay applied. If the exit was unclean (crash, kill -9), the periodic 60-second snapshots limit data loss to at most one minute of cell history.
 
 None of these failures are recoverable in the traditional "the server handled it" sense. They are recoverable in the *peer-to-peer* sense: the network repairs itself by routing around damage, and individual sessions occasionally lose state in exchange for the property that there is no operator.
 

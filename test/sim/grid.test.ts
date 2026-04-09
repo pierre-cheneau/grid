@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { DIR_DELTA, applyTurn, cellKey, inBounds, parseCellKey } from '../../src/sim/grid.js';
 import type { Config, Direction } from '../../src/sim/types.js';
 
-const cfg: Config = { width: 32, height: 16, halfLifeTicks: 60, seed: 0n };
+const cfg: Config = { width: 32, height: 16, halfLifeTicks: 60, seed: 0n, circular: false };
 
 describe('grid', () => {
   describe('cellKey', () => {

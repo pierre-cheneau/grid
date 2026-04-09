@@ -6,7 +6,7 @@ import { decayCells } from '../../src/sim/decay.js';
 import type { Cell } from '../../src/sim/types.js';
 
 function cell(createdAtTick: number, ownerId = 'p:a'): Cell {
-  return { type: 'trail', ownerId, createdAtTick };
+  return { type: 'trail', ownerId, createdAtTick, colorSeed: 0 };
 }
 
 describe('decayCells', () => {

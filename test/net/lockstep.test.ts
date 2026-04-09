@@ -13,7 +13,7 @@ import {
   newRng,
 } from '../../src/sim/index.js';
 
-const cfg: Config = { width: 16, height: 16, halfLifeTicks: 30, seed: 0n };
+const cfg: Config = { width: 16, height: 16, halfLifeTicks: 30, seed: 0n, circular: false };
 
 function makeInitial(): GridState {
   const a: Player = {

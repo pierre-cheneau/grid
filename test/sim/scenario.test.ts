@@ -9,7 +9,7 @@ import { hashState } from '../../src/sim/hash.js';
 
 describe('determinism scenario', () => {
   it('produces the pinned hash', () => {
-    assert.equal(hashState(runScenario()), '36f5919d650009ef');
+    assert.equal(hashState(runScenario()), 'c599d1866c56a9c9');
   });
 
   it('is stable across two consecutive runs (local determinism)', () => {

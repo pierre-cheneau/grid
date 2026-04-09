@@ -12,7 +12,7 @@ describe('snapshot codec', () => {
     const b64 = encodeSnapshot(s);
     const round = decodeSnapshot(b64);
     assert.equal(hashState(round), hashState(s));
-    assert.equal(hashState(round), '36f5919d650009ef');
+    assert.equal(hashState(round), 'c599d1866c56a9c9');
   });
 
   it('produces a base64 string', () => {

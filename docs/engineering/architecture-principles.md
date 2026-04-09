@@ -49,7 +49,7 @@ GRID is organized in concentric layers. **Dependencies point inward.** Outer lay
 |---|---|---|
 | `src/sim/` | The deterministic game simulation. Pure functions, no I/O. | Nothing inside `src/`. |
 | `src/id/` | Identity derivation: USER@HOSTNAME, color hashing, identity cache. | `src/sim/` (for type definitions only). |
-| `src/persist/` | Daily grid persistence, midnight reset, archive writes, joiner sync state. | `src/sim/`, `src/id/`. |
+| `src/persist/` | Cell snapshot encoding/decoding, local file backup (`~/.grid/`), Nostr snapshot publishing/fetching, hash chain computation, compression. | `src/sim/`, `src/id/`. |
 | `src/render/` | Terminal rendering, box-drawing, ANSI color, intro animation. | `src/sim/`, `src/id/`. |
 | `src/ui/` | Keyboard input, raw mode, exit handling, the spectator overlay. | `src/sim/`, `src/render/`. |
 | `src/net/` | P2P networking, Trystero, Nostr signaling, lockstep transport, peer eviction. | `src/sim/`, `src/id/`, `src/persist/`. |

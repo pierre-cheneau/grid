@@ -41,9 +41,17 @@ export function parseCellKey(key: string): { x: number; y: number } {
   return { x, y };
 }
 
-/** Returns true iff (x, y) lies inside the playable area defined by `cfg`. */
+/** Returns true iff (x, y) lies inside the playable area defined by `cfg`.
+ *  When `cfg.circular` is true, the area is a circle inscribed in the bounding
+ *  rectangle. All math is integer — centers are doubled to avoid 0.5. */
 export function inBounds(cfg: Config, x: number, y: number): boolean {
-  return x >= 0 && y >= 0 && x < cfg.width && y < cfg.height;
+  if (x < 0 || y < 0 || x >= cfg.width || y >= cfg.height) return false;
+  if (!cfg.circular) return true;
+  // Circle inscribed in width×height. Diameter = min(width, height).
+  const dx = 2 * x - (cfg.width - 1);
+  const dy = 2 * y - (cfg.height - 1);
+  const d = Math.min(cfg.width, cfg.height);
+  return dx * dx + dy * dy <= d * d;
 }
 
 /**

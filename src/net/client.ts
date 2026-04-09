@@ -2,6 +2,7 @@
 // peer-registry + sync into a single object. Drives the lockstep loop in pull
 // mode via `runOnce(now)`; the CLI wraps that in a setInterval.
 
+import { GENESIS_HASH, computeChainHash } from '../persist/chain.js';
 import { type Config, type GridState, type PlayerId, type Turn, hashState } from '../sim/index.js';
 import { FREEZE_THRESHOLD_MS, MAX_PROTOCOL_FAULTS, SEED_TIMEOUT_MS } from './constants.js';
 import { dbg } from './debug.js';
@@ -57,6 +58,7 @@ export class NetClient {
   private seedTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRunOnceAt = 0;
   private cachedHash = '';
+  private currentChainHash: Uint8Array = GENESIS_HASH;
 
   private readonly tickListeners: TickListener[] = [];
   private readonly joinListeners: PeerListener[] = [];
@@ -90,6 +92,10 @@ export class NetClient {
 
   get stateHash(): string {
     return this.cachedHash;
+  }
+
+  get chainHash(): Uint8Array {
+    return this.currentChainHash;
   }
 
   get peers(): ReadonlySet<PlayerId> {
@@ -174,6 +180,11 @@ export class NetClient {
         }),
       );
       this.hashCheck.recordOwn(newState.tick, this.cachedHash, this.localId);
+      this.currentChainHash = computeChainHash(
+        this.currentChainHash,
+        this.cachedHash,
+        newState.tick,
+      );
     }
     return newState;
   }

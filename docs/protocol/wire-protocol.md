@@ -218,6 +218,60 @@ Sent to a peer that has just been evicted, so it knows to disconnect cleanly.
 
 The peer is leaving cleanly. Other peers immediately remove it from the neighborhood and derez its cycle.
 
+## Nostr persistence events
+
+In addition to the WebRTC wire protocol, GRID publishes persistence events to Nostr relays. These are NOT peer-to-peer messages — they are public events for state recovery and integrity verification.
+
+### `grid:world-config` — daily world dimensions
+
+Published at midnight UTC by every peer online at the reset. Contains the next day's world dimensions.
+
+```
+Kind: 22768
+Tags: [["d", "grid:2026-04-09"], ["w", "120"], ["h", "60"], ["peak", "25"]]
+```
+
+- `d` — unique identifier (NIP-33 replaceable event by day).
+- `w`, `h` — world width and height in cells.
+- `peak` — yesterday's peak player count (used to compute the dimensions).
+
+### `grid:cells` — compressed cell snapshot
+
+Published every 60 seconds during active play and on graceful shutdown.
+
+```
+Kind: 22769
+Tags: [["d", "grid:2026-04-09:cells"], ["tick", "540000"], ["count", "3200"]]
+Content: <base64 of compressed binary cell array>
+```
+
+- `tick` — the simulation tick at which the snapshot was taken.
+- `count` — number of cells in the snapshot.
+- Content is a compact binary format (14 bytes/cell: x u16, y u16, createdAtTick u32, colorSeed u32, type u8, ownerHash u8), compressed with a Node.js built-in algorithm.
+
+### `grid:chain` — hash chain attestation
+
+Published every 300 ticks (30 seconds) per room. Forms an append-only hash chain for integrity verification.
+
+```
+Kind: 22770
+Tags: [
+  ["d", "grid:2026-04-09"],
+  ["tick", "600"],
+  ["sh", "a3f8c92b7e1d4f06"],
+  ["ch", "b4e9..."],
+  ["prev", "a1c3..."],
+  ["peers", "3"]
+]
+```
+
+- `sh` — stateHash (truncated SHA-256, same as peer-to-peer STATE_HASH).
+- `ch` — chainHash = SHA256(prevChainHash + stateHash + tick).
+- `prev` — previous chainHash (links the chain).
+- `peers` — number of peers in the room at this tick (consensus weight).
+
+Multiple independent peers publishing the same `ch` for the same `tick` constitutes consensus.
+
 ## Message ordering and delivery guarantees
 
 | Type | Channel | Reliable? | Ordered? |
@@ -232,6 +286,9 @@ The peer is leaving cleanly. Other peers immediately remove it from the neighbor
 | RECAP | Nostr | best-effort | best-effort |
 | KICKED | WebRTC | yes | yes |
 | BYE | WebRTC | yes | yes |
+| grid:world-config | Nostr | best-effort | best-effort |
+| grid:cells | Nostr | best-effort | best-effort |
+| grid:chain | Nostr | best-effort | best-effort |
 
 WebRTC data channels can be configured per-channel; v0.1 uses one unreliable-unordered channel for INPUT and STATE_HASH (the high-volume tick-aligned messages), and one reliable-ordered channel for everything else.
 

@@ -23,7 +23,7 @@ For the full concept, read [`docs/concept/vision.md`](docs/concept/vision.md). F
 │   ├── render/                ← terminal rendering, box-drawing, ANSI color
 │   ├── ui/                    ← keyboard input, intro animation, exit epitaph
 │   ├── id/                    ← identity derivation (USER@HOSTNAME, color hash)
-│   ├── persist/               ← daily grid persistence, midnight reset, archive writes
+│   ├── persist/               ← cell snapshots, Nostr persistence, local backup, hash chain
 │   └── cli/                   ← `npx grid` entry point, argument parsing, top-level wiring
 ├── test/
 │   ├── sim/                   ← determinism tests, property-based tests

@@ -9,7 +9,7 @@ import { describe, it } from 'node:test';
 import { canonicalBytes } from '../../src/sim/serialize.js';
 import type { Cell, Config, GridState, Player } from '../../src/sim/types.js';
 
-const cfg: Config = { width: 32, height: 16, halfLifeTicks: 60, seed: 0xc0ffeen };
+const cfg: Config = { width: 32, height: 16, halfLifeTicks: 60, seed: 0xc0ffeen, circular: false };
 
 function makePlayer(id: string, x: number, y: number, score = 0): Player {
   return {
@@ -23,8 +23,8 @@ function makePlayer(id: string, x: number, y: number, score = 0): Player {
   };
 }
 
-function makeCell(ownerId: string, createdAtTick = 1): Cell {
-  return { type: 'trail', ownerId, createdAtTick };
+function makeCell(ownerId: string, createdAtTick = 1, colorSeed = 0): Cell {
+  return { type: 'trail', ownerId, createdAtTick, colorSeed };
 }
 
 function emptyState(): GridState {
@@ -38,13 +38,13 @@ function emptyState(): GridState {
 }
 
 describe('canonicalBytes', () => {
-  it('starts with the GRID magic and version 1', () => {
+  it('starts with the GRID magic and version 2', () => {
     const bytes = canonicalBytes(emptyState());
     assert.equal(bytes[0], 0x47); // 'G'
     assert.equal(bytes[1], 0x52); // 'R'
     assert.equal(bytes[2], 0x49); // 'I'
     assert.equal(bytes[3], 0x44); // 'D'
-    assert.equal(bytes[4], 1); // version
+    assert.equal(bytes[4], 2); // version
   });
 
   it('produces the same bytes regardless of player insertion order', () => {

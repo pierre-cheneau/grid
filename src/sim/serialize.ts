@@ -19,7 +19,8 @@
 //   11..13 config.height u16
 //   13..17 config.halfLifeTicks u32
 //   17..25 config.seed u64
-//   25..33 rng.state u64
+//   25     config.circular u8 (0=rect, 1=circle)
+//   26..34 rng.state u64
 //   33..37 players.size u32
 //   then for each player in sortedKeys order:
 //     id: u16 length-prefix + UTF-8 bytes
@@ -35,12 +36,13 @@
 //     type u8 (0=trail, 1=wall)
 //     ownerId: u16 length-prefix + UTF-8 bytes
 //     createdAtTick u32
+//     colorSeed u32
 
 import { sortedEntries } from './iter.js';
 import type { CellType, GridState } from './types.js';
 
 const MAGIC = new Uint8Array([0x47, 0x52, 0x49, 0x44]); // "GRID"
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 
 const CELL_TYPE_TAG: Record<CellType, number> = {
   trail: 0,
@@ -51,7 +53,7 @@ const CELL_TYPE_TAG: Record<CellType, number> = {
  * Append-style byte writer over a growing `Uint8Array`. Cheap to construct, no Node
  * dependencies. We pre-grow by doubling so total work is O(n) regardless of state size.
  */
-class ByteWriter {
+export class ByteWriter {
   private buf: Uint8Array;
   private view: DataView;
   private pos = 0;
@@ -142,6 +144,7 @@ export function canonicalBytes(state: GridState): Uint8Array {
   w.u16(state.config.height);
   w.u32(state.config.halfLifeTicks);
   w.u64(state.config.seed);
+  w.u8(state.config.circular ? 1 : 0);
 
   w.u64(state.rng.state);
 
@@ -173,6 +176,7 @@ export function canonicalBytes(state: GridState): Uint8Array {
     w.u8(CELL_TYPE_TAG[cell.type]);
     w.lenString(cell.ownerId);
     w.u32(cell.createdAtTick);
+    w.u32(cell.colorSeed);
   }
 
   return w.finish();

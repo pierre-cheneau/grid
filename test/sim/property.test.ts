@@ -7,7 +7,7 @@ import type { Direction, GridState, Inputs, Player, Turn } from '../../src/sim/t
 
 fc.configureGlobal({ numRuns: 80 });
 
-const cfg = { width: 16, height: 16, halfLifeTicks: 30, seed: 0n };
+const cfg = { width: 16, height: 16, halfLifeTicks: 30, seed: 0n, circular: false };
 
 const dirArb = fc.constantFrom<Direction>(0, 1, 2, 3);
 const turnArb = fc.constantFrom<Turn>('', 'L', 'R');

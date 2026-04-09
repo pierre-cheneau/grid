@@ -9,6 +9,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     height: 16,
     halfLifeTicks: 30,
     seed: 0n,
+    circular: false,
     ...overrides,
   };
 }

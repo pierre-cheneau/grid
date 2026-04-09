@@ -1,4 +1,4 @@
-// Behavioral tests for the 8-phase intro animation.
+// Behavioral tests for the intro animation (grid-draw phase removed in Stage 6).
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
@@ -10,10 +10,6 @@ const cfg: IntroConfig = {
   cols: 60,
   rows: 20,
   identity: 'corne@thinkpad',
-  spawnX: 10,
-  spawnY: 6,
-  gridW: 30,
-  gridH: 14,
   identityColor: [0, 255, 200],
 };
 
@@ -33,26 +29,19 @@ describe('introFrame', () => {
   });
 
   it('shows dots through the vortex void (late vortex phase)', () => {
-    // At 80% through the vortex, the eye is large and dots are visible.
     const vortexLate = 5500 + (10500 - 5500) * 0.8;
     const text = introFrame(cfg, vortexLate, 42).map(stripAnsi).join('');
     assert.ok(text.includes('.'), 'dot grid should be visible through the void');
   });
 
-  it('shows grid border during construction Phase 6', () => {
-    const text = introFrame(cfg, 10000, 42).map(stripAnsi).join('');
-    assert.ok(text.includes('┌') || text.includes('─'), 'grid border should be drawing');
-  });
-
-  it('shows head glyph at end of animation', () => {
+  it('shows double-wide head glyph at screen center near end of animation', () => {
     const frame = introFrame(cfg, INTRO_DURATION_MS, 42);
-    // The spawn is at grid coords inside the centered grid frame.
-    const gx = Math.floor((cfg.cols - (cfg.gridW + 2)) / 2);
-    const gy = Math.floor((cfg.rows - (cfg.gridH + 3)) / 2);
-    const screenX = gx + 1 + cfg.spawnX;
-    const screenY = gy + 1 + cfg.spawnY;
-    const text = stripAnsi(frame[screenY] ?? '');
-    assert.equal(text[screenX], GLYPH_HEAD, 'head glyph at spawn position');
+    // Spawn is double-wide at screen center.
+    const sx = Math.floor(cfg.cols / 2) - 1;
+    const sy = Math.floor(cfg.rows / 2);
+    const text = stripAnsi(frame[sy] ?? '');
+    assert.equal(text[sx], GLYPH_HEAD, 'left half of head');
+    assert.equal(text[sx + 1], GLYPH_HEAD, 'right half of head');
   });
 
   it('shows hidden message when seed % 100 === 0 (during pause phase)', () => {

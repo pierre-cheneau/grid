@@ -9,7 +9,7 @@
 // from full, so we cap retries at a generous constant and throw on overflow (which is
 // a programming error, not a runtime condition we expect to handle).
 
-import { cellKey } from './grid.js';
+import { cellKey, inBounds } from './grid.js';
 import { sortedEntries } from './iter.js';
 import { nextRangeU32 } from './rng.js';
 import type { Cell, Config, Player, PlayerId, Position, RngState } from './types.js';
@@ -32,6 +32,7 @@ export function pickSpawnCell(
   for (let attempt = 0; attempt < MAX_SPAWN_ATTEMPTS; attempt++) {
     const x = nextRangeU32(rng, cfg.width);
     const y = nextRangeU32(rng, cfg.height);
+    if (!inBounds(cfg, x, y)) continue;
     const key = cellKey(x, y);
     if (cells.has(key)) continue;
     if (occupied.has(key)) continue;

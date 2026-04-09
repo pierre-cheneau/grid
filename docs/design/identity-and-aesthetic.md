@@ -12,7 +12,7 @@ GRID has no accounts, no signup, no profiles, no usernames you pick. Your identi
 - **Trail color:** a 24-bit RGB color derived deterministically from a hash of a stable machine identifier (machine-id on Linux, IOPlatformUUID on macOS, MachineGuid on Windows) salted with the username. The hash is biased toward neon-bright colors (high saturation, high value) so trails are always vivid.
 - **Daemon prefix:** when a daemon is deployed, its name is prefixed with `bot:` and includes the daemon script name. Example: `bot:nightcrawler@marie@archbox`. This makes daemon authorship visible at a glance.
 
-Identity is generated *the first time the player runs `npx grid`* and cached in `~/.grid/identity.json` so the same machine produces the same color forever, even after reinstalls. The cache is a single line of JSON; deleting it generates a fresh identity.
+Identity is generated *the first time the player runs `npx grid`* and cached in `~/.grid/identity.json` so the same machine produces the same color forever, even after reinstalls. The cache includes a **Nostr-compatible keypair** (Schnorr) used to sign grid state published to relays — this is the player's cryptographic identity, persistent across sessions. Deleting the cache generates a fresh identity (and a fresh keypair).
 
 ### Why this is the right model
 
@@ -37,13 +37,13 @@ GRID looks like Tron. Specifically, GRID looks like the *vector graphics* of the
 
 GRID uses three categories of Unicode characters and one color model:
 
-1. **Box-drawing characters** for walls, structures, and trails:
+1. **Box-drawing characters** for the world boundary, walls, and structures:
    ```
    ─ │ ┌ ┐ └ ┘ ┼ ├ ┤ ┬ ┴
    ━ ┃ ┏ ┓ ┗ ┛ ╋ ┣ ┫ ┳ ┻
    ╱ ╲ ╳
    ```
-   These render as crisp connected lines on any modern terminal. Trails are drawn as continuous box-drawn lines that bend correctly at corners, not as disconnected blocks.
+   These render as crisp connected lines on any modern terminal. The world boundary is drawn with these characters when the player is near the edge — it is a physical wall in the world, not a UI decoration.
 
 2. **Block characters** for the cycle heads and high-density features:
    ```
@@ -57,11 +57,21 @@ GRID uses three categories of Unicode characters and one color model:
    ```
    Used sparingly. Reserved for special cells, structures, or HUD markers.
 
-4. **24-bit ANSI color** (`\e[38;2;R;G;Bm`) for everything. Each cycle's color is its hashed RGB. The grid floor is a deep blue-black (`#0a0a1a`). Walls are bright cyan (`#00ffff`). The intro animation uses orange (`#ff6e2e`). Decaying cells fade their color toward black as they age.
+4. **24-bit ANSI color** (`\e[38;2;R;G;Bm`) for everything. Each cycle's color is its hashed RGB. The grid floor is a deep blue-black (`#0a0a1a`) with breathing dot characters (`.`). Walls and world boundaries are bright cyan (`#00ffff`). The intro animation uses Matrix green (`#00ff41`). Decaying cells fade their color toward black as they age.
 
 ### Layout and projection
 
-The grid is rendered as a **flat top-down view** in v0.1. Each grid cell is one terminal character. The grid's logical width and height are computed from the terminal's window dimensions at startup and re-computed on `SIGWINCH` (terminal resize).
+The grid is rendered as a **flat top-down view**. The world grid is larger than the terminal — each player sees a **viewport** centered on their cycle, a window into the world. The world scrolls around the player as they move. Each grid cell is one terminal character.
+
+There is no bordered rectangle framing the play area. The player's terminal IS the viewport. The world extends in every direction, filled with breathing dots on empty floor. The only frame is the **world boundary** — a physical cyan wall (`│ ─ ┌ ┐ └ ┘`) that appears when the player is near the edge. Beyond the world boundary is **void** (pure black, no dots). The edge is the edge of reality.
+
+This means:
+- In the middle of the world, the player sees grid floor in every direction. No borders visible. Immersive.
+- Near the world edge, the cyan boundary wall appears on one side (or two sides at corners).
+- The world boundary is a lethal wall — crashing into it is a derez.
+- The camera clamps at world edges so the void is visible but the camera never shows "beyond."
+
+The viewport size is the terminal dimensions minus one row (for the status line). The camera follows the local player's position.
 
 A future v0.2 may add an optional **isometric tilt** mode where the grid is projected at a 30° angle and box-drawing characters are used to render the perspective lines. This looks more cinematic but is harder to play (perspective compresses depth perception). The tilt is *additive* — the gameplay is identical, only the renderer changes — so it can be added later without protocol or simulation changes.
 
@@ -76,9 +86,10 @@ ASCII 3D looks gorgeous in screenshots and is harder to *play* than to look at. 
 Colors in GRID carry meaning:
 
 - **Cycle color** = identity (whose program is this).
-- **Cyan** = walls and grid edges (immutable structure).
-- **Dim blue-black** = empty grid floor.
-- **Orange** = the digitization animation, the threshold ritual, end-of-day recap.
+- **Cyan** = walls and world boundary edges (immutable structure).
+- **Dim blue-black with breathing dots** = empty grid floor (the world is alive).
+- **Black** = void beyond the world boundary (the grid doesn't extend there).
+- **Matrix green** (`#00ff41`) = the digitization animation, the threshold ritual.
 - **White** = HUD text, system messages, names in the recap.
 - **Magenta** = warnings, derez notifications, low-decay critical cells.
 
@@ -91,14 +102,15 @@ Every time the player types `npx grid`, the terminal performs a small ritual tha
 ### What the player sees
 
 1. The terminal is cleared and switched to alternate-screen mode (so the previous shell history is preserved underneath).
-2. A grid of `.` characters fades in across the full terminal in dim blue-black, ~50ms.
-3. Random characters from the player's `${USER}` and `${HOSTNAME}` begin falling from the top of the screen in orange, accelerating downward — Matrix-rain style but using *the player's own characters*, not generic katakana.
-4. As the characters reach the bottom, they assemble into a single bright orange cell at a position on the grid. This is the player's cycle, freshly digitized.
-5. The cycle's color shifts from orange (the ritual color) to its actual hashed identity color over ~200ms.
-6. The grid finishes loading: other cycles, walls, decaying trails fade in.
-7. Control transfers to the player.
+2. A cursor prompt `>_` appears centered, blinking (~1.5s).
+3. The player's `${USER}@${HOSTNAME}` types itself out in Matrix green, as if the grid is reading the player's machine identity.
+4. A dramatic pause — the cursor blinks. Approximately 1 in 100 plays, a hidden message appears below the prompt (a quote from Tron, a haiku about programs). Players who notice will tell other players. Free culture.
+5. The identity characters explode outward in a spinning tornado vortex, each character orbiting and expanding. The green shifts toward cyan as the tornado grows. As the characters spiral outward, the eye of the tornado opens, revealing the breathing dot grid beneath — the player is falling INTO the grid.
+6. The tornado exits the screen. The full breathing dot grid is revealed. The player is inside.
+7. The player's cycle materializes at center screen, shifting from green to its identity color.
+8. Control transfers to the player. The first game frame renders seamlessly — there is no bordered rectangle to construct, just the infinite living grid floor surrounding the player's cycle.
 
-Total elapsed time: ~1.5 seconds in the warm path, up to ~3 seconds the first time `npx` downloads the package. **The animation duration is calibrated to overlap exactly with the WebRTC peer connection handshake.** The ritual is also the loading bar. This is not a coincidence; it is the entire reason the design works.
+Total elapsed time: ~12 seconds. **The animation duration is calibrated to overlap exactly with the WebRTC peer connection handshake and Nostr relay negotiation.** The ritual is also the loading bar. This is not a coincidence; it is the entire reason the design works.
 
 ### Why it must not be skippable
 

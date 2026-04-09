@@ -12,6 +12,7 @@ const cfg: Config = {
   height: 32,
   halfLifeTicks: 60,
   seed: 0xc0ffee_deadbeefn,
+  circular: false,
 };
 
 function initialState(): GridState {

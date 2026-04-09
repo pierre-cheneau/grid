@@ -13,9 +13,20 @@ import { TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
 import { createTrysteroRoom } from '../net/room.js';
+import { dayStartMs, tickAtTime, todayTag } from '../net/time.js';
+import {
+  compressSnapshot,
+  decodeSnapshot,
+  decompressSnapshot,
+  encodeSnapshot,
+  filterExpiredCells,
+  loadLocalSnapshot,
+  saveLocalSnapshot,
+} from '../persist/index.js';
 import { rgbFromColorSeed } from '../render/color.js';
 import {
   AnsiWriter,
+  type Camera,
   type Viewport,
   buildFrame,
   cleanupTerminal,
@@ -25,7 +36,14 @@ import {
   tryMaximize,
 } from '../render/index.js';
 import type { SessionTracker } from '../render/session.js';
-import { type Config, type GridState, TICKS_PER_SECOND, hashState, newRng } from '../sim/index.js';
+import {
+  type Config,
+  type GridState,
+  type Player,
+  TICKS_PER_SECOND,
+  hashState,
+  newRng,
+} from '../sim/index.js';
 
 interface CliConfig {
   readonly room: string;
@@ -57,55 +75,64 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
       opts[key] = 'true';
     }
   }
-  const today = new Date().toISOString().slice(0, 10);
   return {
-    room: opts['room'] ?? `grid:${today}`,
+    room: opts['room'] ?? `grid:${todayTag(Date.now())}`,
     // Raw overrides — null means "auto-size to terminal after maximize".
     width: opts['width'] ? Number.parseInt(opts['width'], 10) : 0,
     height: opts['height'] ? Number.parseInt(opts['height'], 10) : 0,
     seed: opts['seed'] ? BigInt(opts['seed']) : 0xc0ffee_deadbeefn,
-    halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 600,
+    halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 100,
     name: opts['name'] ?? null,
     debug: opts['debug'] === 'true',
     relayUrls: opts['relay'] ? opts['relay'].split(',') : [],
   };
 }
 
-function spawnPos(colorSeed: number, w: number, h: number): [number, number] {
-  return [Math.abs(colorSeed) % w, Math.abs(colorSeed >> 8) % h];
-}
-
-function makeInitialState(cfg: CliConfig, localId: string, colorSeed: number): GridState {
-  const config: Config = {
+function makeGameConfig(cfg: CliConfig): Config {
+  return {
     width: cfg.width,
     height: cfg.height,
     halfLifeTicks: cfg.halfLifeTicks,
     seed: cfg.seed,
+    circular: true,
   };
-  const [x, y] = spawnPos(colorSeed, cfg.width, cfg.height);
+}
+
+function makeLocalPlayer(localId: string, colorSeed: number, w: number, h: number): Player {
   return {
-    tick: 0,
+    id: localId,
+    pos: { x: Math.floor(w / 2), y: Math.floor(h / 2) },
+    dir: 1,
+    isAlive: true,
+    respawnAtTick: null,
+    score: 0,
+    colorSeed,
+  };
+}
+
+function makeInitialState(
+  cfg: CliConfig,
+  localId: string,
+  colorSeed: number,
+  tick: number,
+): GridState {
+  const config = makeGameConfig(cfg);
+  const player = makeLocalPlayer(localId, colorSeed, cfg.width, cfg.height);
+  return {
+    tick,
     config,
     rng: newRng(cfg.seed),
-    players: new Map([
-      [
-        localId,
-        {
-          id: localId,
-          pos: { x, y },
-          dir: 1,
-          isAlive: true,
-          respawnAtTick: null,
-          score: 0,
-          colorSeed,
-        },
-      ],
-    ]),
+    players: new Map([[localId, player]]),
     cells: new Map(),
   };
 }
 
-function setupRenderer(localId: string, writer: AnsiWriter | null): RendererHandle {
+function setupRenderer(
+  localId: string,
+  writer: AnsiWriter | null,
+  worldW: number,
+  worldH: number,
+): RendererHandle {
   if (!writer) {
     let lastPrinted = 0;
     return {
@@ -123,10 +150,15 @@ function setupRenderer(localId: string, writer: AnsiWriter | null): RendererHand
   stdout.on('resize', () => {
     viewport = { cols: stdout.columns ?? 80, rows: stdout.rows ?? 24 };
   });
+  // Camera tracks the local player's position. On death, stays at the death
+  // position so the player can see what killed them.
+  let lastCamera: Camera = { x: Math.floor(worldW / 2), y: Math.floor(worldH / 2) };
   return {
     render(state, hash) {
       if (state === null) return;
-      writer.endFrame(buildFrame(state, viewport, localId, hash));
+      const me = state.players.get(localId);
+      if (me?.isAlive) lastCamera = { x: me.pos.x, y: me.pos.y };
+      writer.endFrame(buildFrame(state, viewport, lastCamera, localId, hash));
     },
     shutdown() {
       writer.shutdown();
@@ -139,12 +171,21 @@ function setupShutdown(
   renderer: RendererHandle,
   tracker: SessionTracker,
   id: LocalIdentity,
+  dayTag: string,
 ): () => Promise<void> {
   let stopping = false;
   return async () => {
     if (stopping) return;
     stopping = true;
     renderer.shutdown();
+
+    // Persist cell state for the next session (best-effort).
+    const state = client.currentState;
+    if (state.cells.size > 0) {
+      const raw = encodeSnapshot({ tick: state.tick, config: state.config, cells: state.cells });
+      await saveLocalSnapshot(dayTag, compressSnapshot(raw)).catch(() => {});
+    }
+
     const stats = tracker.finalize(Date.now());
     stdout.write(
       renderEpitaph(
@@ -195,19 +236,56 @@ async function main(): Promise<void> {
     await tryMaximize(stdout);
   }
 
-  // Compute grid dimensions from the (now maximized) terminal size.
-  // Explicit --width/--height override; 0 means auto-size.
-  const gridW = cfg.width > 0 ? cfg.width : Math.max(16, (stdout.columns ?? 80) - 2);
-  const gridH = cfg.height > 0 ? cfg.height : Math.max(8, (stdout.rows ?? 24) - 3);
+  // World dimensions (in cells). Default 500×500 circular — each cell renders as
+  // 2 terminal chars wide, so a square grid looks square on screen. Override via
+  // --width/--height for testing.
+  const gridW = cfg.width > 0 ? cfg.width : 250;
+  const gridH = cfg.height > 0 ? cfg.height : 250;
   const gridCfg = { ...cfg, width: gridW, height: gridH };
+
+  // Time-anchored ticks: the tick number corresponds to wall-clock time within
+  // the day. This means cells decay in real time even when no peers are online.
+  const now = Date.now();
+  const dayStart = dayStartMs(now);
+  const currentTick = tickAtTime(now, dayStart);
+  const dayTag = todayTag(now);
 
   const baseId = await resolveIdentity();
   const id = cfg.name === null ? baseId : rebaseIdentity(baseId, cfg.name);
+
+  // Cold start: try loading persisted cell state from a previous session today.
+  let initialState: GridState;
+  const persistedBytes = await loadLocalSnapshot(dayTag);
+  if (persistedBytes !== null) {
+    try {
+      const raw = decompressSnapshot(persistedBytes);
+      const snap = decodeSnapshot(raw);
+      const freshCells = filterExpiredCells(snap.cells, currentTick, snap.config.halfLifeTicks);
+      const player = makeLocalPlayer(id.id, id.colorSeed, gridW, gridH);
+      initialState = {
+        tick: currentTick,
+        config: makeGameConfig(gridCfg),
+        rng: newRng(gridCfg.seed),
+        players: new Map([[id.id, player]]),
+        cells: freshCells,
+      };
+      if (cfg.debug) {
+        process.stderr.write(
+          `grid: loaded ${freshCells.size} cells from local snapshot (${snap.cells.size} total, ${snap.cells.size - freshCells.size} expired)\n`,
+        );
+      }
+    } catch {
+      initialState = makeInitialState(gridCfg, id.id, id.colorSeed, currentTick);
+    }
+  } else {
+    initialState = makeInitialState(gridCfg, id.id, id.colorSeed, currentTick);
+  }
+
   const client = new NetClient(
     {
       roomKey: gridCfg.room,
       identity: id,
-      initialState: makeInitialState(gridCfg, id.id, id.colorSeed),
+      initialState,
     },
     {
       roomFactory: (roomKey, peerId) =>
@@ -221,28 +299,23 @@ async function main(): Promise<void> {
 
   // Intro animation overlaps with the WebRTC handshake.
   if (writer) {
-    const [sx, sy] = spawnPos(id.colorSeed, gridW, gridH);
     await playIntro(
       writer,
       {
         cols: stdout.columns ?? 80,
         rows: stdout.rows ?? 24,
         identity: id.id,
-        spawnX: sx,
-        spawnY: sy,
-        gridW,
-        gridH,
         identityColor: rgbFromColorSeed(id.colorSeed),
       },
       Math.floor(Date.now() / 1000),
     );
-    // No screen clear needed — the first game frame fills the entire viewport
-    // with padding rows, overwriting the intro seamlessly.
+    // No screen clear needed — the first game frame fills the entire viewport,
+    // overwriting the intro seamlessly.
   }
 
   const tracker = createSessionTracker(Date.now());
-  const renderer = setupRenderer(id.id, writer);
-  const shutdown = setupShutdown(client, renderer, tracker, id);
+  const renderer = setupRenderer(id.id, writer, gridW, gridH);
+  const shutdown = setupShutdown(client, renderer, tracker, id, dayTag);
   setupKeyboard(client, shutdown);
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
