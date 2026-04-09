@@ -44,4 +44,20 @@ describe('HashCheck', () => {
     assert.deepEqual(d.minority, ['p:c']);
     assert.equal(d.majorityHash, 'aaaaaaaaaaaaaaaa');
   });
+
+  it('clear() empties all stored hashes', () => {
+    const c = new HashCheck();
+    c.recordOwn(30, 'aaaaaaaaaaaaaaaa', 'p:a');
+    c.recordRemote(mk('p:b', 'aaaaaaaaaaaaaaaa'));
+    assert.equal(c.classify(30), null); // all agree
+    c.clear();
+    // After clear, classify returns null (no data for tick 30)
+    assert.equal(c.classify(30), null);
+    // Recording new data works normally after clear
+    c.recordOwn(60, 'cccccccccccccccc', 'p:a');
+    c.recordRemote(mk('p:b', 'dddddddddddddddd', 60));
+    const d = c.classify(60);
+    assert.ok(d);
+    assert.deepEqual(d.minority, ['p:b']);
+  });
 });

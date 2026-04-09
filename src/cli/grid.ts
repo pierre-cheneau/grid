@@ -13,7 +13,7 @@ import { TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
 import { createTrysteroRoom } from '../net/room.js';
-import { dayStartMs, tickAtTime, todayTag } from '../net/time.js';
+import { dayStartMs, seedFromDay, tickAtTime, todayTag } from '../net/time.js';
 import {
   compressSnapshot,
   decodeSnapshot,
@@ -44,6 +44,8 @@ import {
   hashState,
   newRng,
 } from '../sim/index.js';
+import { DayTracker, computeAllCrowns } from '../stats/index.js';
+import type { Crown } from '../stats/types.js';
 
 interface CliConfig {
   readonly room: string;
@@ -56,8 +58,11 @@ interface CliConfig {
   readonly relayUrls: ReadonlyArray<string>;
 }
 
+/** How long the recap text is shown in the status bar after midnight (ms). */
+const RECAP_DISPLAY_MS = 5000;
+
 interface RendererHandle {
-  render(state: GridState | null, hash?: string): void;
+  render(state: GridState | null, hash?: string, recapText?: string): void;
   shutdown(): void;
 }
 
@@ -154,11 +159,11 @@ function setupRenderer(
   // position so the player can see what killed them.
   let lastCamera: Camera = { x: Math.floor(worldW / 2), y: Math.floor(worldH / 2) };
   return {
-    render(state, hash) {
+    render(state, hash, recapText?) {
       if (state === null) return;
       const me = state.players.get(localId);
       if (me?.isAlive) lastCamera = { x: me.pos.x, y: me.pos.y };
-      writer.endFrame(buildFrame(state, viewport, lastCamera, localId, hash));
+      writer.endFrame(buildFrame(state, viewport, lastCamera, localId, hash, recapText));
     },
     shutdown() {
       writer.shutdown();
@@ -171,7 +176,8 @@ function setupShutdown(
   renderer: RendererHandle,
   tracker: SessionTracker,
   id: LocalIdentity,
-  dayTag: string,
+  getDayTag: () => string,
+  getCrowns: () => Crown[],
 ): () => Promise<void> {
   let stopping = false;
   return async () => {
@@ -181,12 +187,14 @@ function setupShutdown(
 
     // Persist cell state for the next session (best-effort).
     const state = client.currentState;
+    const currentDayTag = getDayTag();
     if (state.cells.size > 0) {
       const raw = encodeSnapshot({ tick: state.tick, config: state.config, cells: state.cells });
-      await saveLocalSnapshot(dayTag, compressSnapshot(raw)).catch(() => {});
+      await saveLocalSnapshot(currentDayTag, compressSnapshot(raw)).catch(() => {});
     }
 
     const stats = tracker.finalize(Date.now());
+    const crowns = getCrowns();
     stdout.write(
       renderEpitaph(
         {
@@ -196,6 +204,7 @@ function setupShutdown(
           derezzes: stats.derezzes,
           deaths: stats.deaths,
           longestRunMs: stats.longestRunMs,
+          ...(crowns.length > 0 ? { crowns, dayTag: currentDayTag } : {}),
         },
         stdout.columns ?? 80,
       ),
@@ -315,17 +324,70 @@ async function main(): Promise<void> {
 
   const tracker = createSessionTracker(Date.now());
   const renderer = setupRenderer(id.id, writer, gridW, gridH);
-  const shutdown = setupShutdown(client, renderer, tracker, id, dayTag);
+
+  // Midnight reset state.
+  let currentDay = dayTag;
+  let dayTracker = new DayTracker();
+  let lastCrowns: Crown[] = [];
+  let recapEndAt = 0;
+  let recapLine = '';
+
+  const shutdown = setupShutdown(
+    client,
+    renderer,
+    tracker,
+    id,
+    () => currentDay,
+    () => lastCrowns,
+  );
   setupKeyboard(client, shutdown);
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
   setInterval(
     () => {
-      const result = client.runOnce(Date.now());
+      const now = Date.now();
+
+      // Midnight detection: compare day tags to detect UTC day boundary.
+      const newDay = todayTag(now);
+      if (newDay !== currentDay) {
+        // Compute crowns from the day that just ended.
+        const dayStats = dayTracker.snapshot(now);
+        const sessionSnap = tracker.snapshot(now);
+        lastCrowns = computeAllCrowns(dayStats, sessionSnap, id.id);
+
+        // Save final cell snapshot for the ended day.
+        const state = client.currentState;
+        if (state.cells.size > 0) {
+          const raw = encodeSnapshot({
+            tick: state.tick,
+            config: state.config,
+            cells: state.cells,
+          });
+          saveLocalSnapshot(currentDay, compressSnapshot(raw)).catch(() => {});
+        }
+
+        // Show recap in the status bar briefly after midnight.
+        recapLine = lastCrowns.map((c) => c.label).join(' · ') || 'no crowns today';
+        recapEndAt = now + RECAP_DISPLAY_MS;
+
+        // Reset for the new day.
+        const newDayStart = dayStartMs(now);
+        const newTick = tickAtTime(now, newDayStart);
+        const newSeed = seedFromDay(newDay);
+        const newCfg = { ...gridCfg, seed: newSeed };
+        client.resetForNewDay(makeInitialState(newCfg, id.id, id.colorSeed, newTick));
+        dayTracker = new DayTracker();
+        currentDay = newDay;
+      }
+
+      // Normal tick.
+      const result = client.runOnce(now);
       if (result !== null) {
         const me = result.players.get(id.id);
-        if (me) tracker.update(me.isAlive, me.score, Date.now());
-        renderer.render(result, client.stateHash);
+        if (me) tracker.update(me.isAlive, me.score, now);
+        dayTracker.observe(result, now);
+        const recap = now < recapEndAt ? recapLine : undefined;
+        renderer.render(result, client.stateHash, recap);
       }
     },
     Math.floor(TICK_DURATION_MS / 2),

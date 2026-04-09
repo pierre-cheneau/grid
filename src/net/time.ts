@@ -7,6 +7,7 @@
 // These functions live in `src/net/` (not `src/sim/`) because they touch the
 // wall clock, which is forbidden inside the simulation boundary.
 
+import { createHash } from 'node:crypto';
 import { TICKS_PER_SECOND } from '../sim/index.js';
 
 const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
@@ -26,4 +27,10 @@ export function tickAtTime(nowMs: number, dayStart: number): number {
 /** Today's date as a `YYYY-MM-DD` string (UTC). Used for room keys and state files. */
 export function todayTag(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+/** Deterministic seed for a day's simulation. SHA-256 of the dayTag, truncated to 64 bits. */
+export function seedFromDay(dayTag: string): bigint {
+  const hash = createHash('sha256').update(dayTag, 'utf-8').digest();
+  return hash.readBigUInt64LE(0);
 }

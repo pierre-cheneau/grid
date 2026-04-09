@@ -138,4 +138,13 @@ describe('buildFrame (double-wide viewport)', () => {
     assert.match(status, /t=0042/);
     assert.match(status, /score=7/);
   });
+
+  it('shows recapText in status bar when provided', () => {
+    const s: GridState = { ...emptyState(), tick: 1 };
+    const wideVp: Viewport = { cols: 80, rows: 11 };
+    const rows = buildFrame(s, wideVp, CENTER, 'me@host', undefined, 'Last Standing a@host (2m)');
+    const status = stripAnsi(rows[wideVp.rows - 1] ?? '');
+    assert.match(status, /Last Standing a@host/);
+    assert.doesNotMatch(status, /t=0001/); // normal HUD replaced
+  });
 });

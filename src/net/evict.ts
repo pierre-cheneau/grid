@@ -65,6 +65,12 @@ export class EvictionTracker {
     }
   }
 
+  /** Clear all votes and evictions (used after midnight reset). */
+  clear(): void {
+    this.votes.clear();
+    this.evicted.clear();
+  }
+
   isEvicted(peerId: string): boolean {
     return this.evicted.has(peerId);
   }

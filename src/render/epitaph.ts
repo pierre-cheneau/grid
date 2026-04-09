@@ -1,10 +1,11 @@
-// Exit epitaph: the 2-line colored message printed to the player's actual shell
+// Exit epitaph: the colored message printed to the player's actual shell
 // scrollback after alt-screen exits. Per `identity-and-aesthetic.md` line 137:
 // "The epitaph is the only trace GRID leaves on the player's machine outside
 // ~/.grid/. It lives in their shell scrollback."
 //
 // Pure function — no I/O. The caller writes the result to stdout.
 
+import type { Crown } from '../stats/types.js';
 import { RESET } from './ansi.js';
 import { ansiFg } from './color.js';
 
@@ -15,6 +16,8 @@ export interface EpitaphData {
   readonly derezzes: number;
   readonly deaths: number;
   readonly longestRunMs: number;
+  readonly crowns?: ReadonlyArray<Crown>;
+  readonly dayTag?: string;
 }
 
 function formatDuration(ms: number): string {
@@ -33,22 +36,24 @@ function padLine(content: string, width: number, fillChar: string): string {
 /**
  * Generate the exit epitaph for shell scrollback. Returns a string with embedded
  * ANSI color escapes and a trailing RESET + newline.
- *
- * Format:
- * ```
- * ── corne@thinkpad ──────────────────────────────
- * visited the grid for 1m 34s · 4 derezzes · 6 deaths · longest run 18s
- * ── npx grid recap ──────────────────────────────
- * ```
  */
 export function renderEpitaph(data: EpitaphData, termWidth: number): string {
   const fg = ansiFg(data.identityColor[0], data.identityColor[1], data.identityColor[2]);
   const white = ansiFg(255, 255, 255);
+  const dim = ansiFg(140, 140, 140);
   const w = Math.max(40, termWidth);
 
   const header = `── ${data.identity} `;
-  const footer = '── npx grid recap ';
   const stats = `visited the grid for ${formatDuration(data.durationMs)} · ${data.derezzes} derezzes · ${data.deaths} deaths · longest run ${formatDuration(data.longestRunMs)}`;
+  const footer = '── npx grid recap ';
 
-  return `\n${fg}${padLine(header, w, '─')}${RESET}\n${white}${stats}${RESET}\n${fg}${padLine(footer, w, '─')}${RESET}\n`;
+  let result = `\n${fg}${padLine(header, w, '─')}${RESET}\n${white}${stats}${RESET}\n`;
+
+  if (data.crowns && data.crowns.length > 0) {
+    const crownLine = data.crowns.map((c) => c.label).join(' · ');
+    result += `${dim}${crownLine}${RESET}\n`;
+  }
+
+  result += `${fg}${padLine(footer, w, '─')}${RESET}\n`;
+  return result;
 }

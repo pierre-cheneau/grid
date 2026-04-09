@@ -10,12 +10,16 @@ export interface SessionStats {
   readonly derezzes: number;
   readonly longestRunMs: number;
   readonly durationMs: number;
+  /** Number of ticks the player was alive ≈ cells deposited. */
+  readonly cellsPainted: number;
 }
 
 export interface SessionTracker {
   /** Call every tick with the local player's current alive state and score. */
   update(isAlive: boolean, score: number, now: number): void;
-  /** Snapshot the final stats. Closes any open alive streak. */
+  /** Snapshot stats without closing the current alive streak (non-destructive). */
+  snapshot(now: number): SessionStats;
+  /** Finalize stats, closing any open alive streak (destructive). */
   finalize(now: number): SessionStats;
 }
 
@@ -26,10 +30,30 @@ export function createSessionTracker(now: number): SessionTracker {
   let wasAlive = true;
   let currentRunStart = now;
   let longestRunMs = 0;
+  let cellsPainted = 0;
+
+  function currentLongest(now: number): number {
+    if (wasAlive) {
+      const run = now - currentRunStart;
+      return run > longestRunMs ? run : longestRunMs;
+    }
+    return longestRunMs;
+  }
 
   function closeRun(now: number): void {
     const run = now - currentRunStart;
     if (run > longestRunMs) longestRunMs = run;
+  }
+
+  function buildStats(now: number, longest: number): SessionStats {
+    return {
+      startedAt,
+      deaths,
+      derezzes: lastScore,
+      longestRunMs: longest,
+      durationMs: now - startedAt,
+      cellsPainted,
+    };
   }
 
   return {
@@ -41,18 +65,16 @@ export function createSessionTracker(now: number): SessionTracker {
       if (!wasAlive && isAlive) {
         currentRunStart = now;
       }
+      if (isAlive) cellsPainted++;
       wasAlive = isAlive;
       lastScore = score;
     },
+    snapshot(now) {
+      return buildStats(now, currentLongest(now));
+    },
     finalize(now) {
       if (wasAlive) closeRun(now);
-      return {
-        startedAt,
-        deaths,
-        derezzes: lastScore,
-        longestRunMs,
-        durationMs: now - startedAt,
-      };
+      return buildStats(now, longestRunMs);
     },
   };
 }

@@ -20,4 +20,4 @@ export { encodeMessage, parseMessage } from './protocol.js';
 export type { Room, RoomFactory } from './room.js';
 export { createTrysteroRoom } from './room.js';
 export { TICK_DURATION_MS, INPUT_TIMEOUT_MS, HASH_INTERVAL_TICKS, MAX_PEERS } from './constants.js';
-export { dayStartMs, tickAtTime, todayTag } from './time.js';
+export { dayStartMs, seedFromDay, tickAtTime, todayTag } from './time.js';

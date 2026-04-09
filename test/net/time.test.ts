@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { dayStartMs, tickAtTime, todayTag } from '../../src/net/time.js';
+import { dayStartMs, seedFromDay, tickAtTime, todayTag } from '../../src/net/time.js';
 
 describe('dayStartMs', () => {
   it('returns midnight UTC for a given timestamp', () => {
@@ -49,5 +49,19 @@ describe('todayTag', () => {
   it('returns YYYY-MM-DD in UTC', () => {
     const ts = Date.UTC(2026, 3, 9, 15, 30, 0);
     assert.equal(todayTag(ts), '2026-04-09');
+  });
+});
+
+describe('seedFromDay', () => {
+  it('is deterministic', () => {
+    assert.equal(seedFromDay('2026-04-09'), seedFromDay('2026-04-09'));
+  });
+
+  it('returns different seeds for different days', () => {
+    assert.notEqual(seedFromDay('2026-04-09'), seedFromDay('2026-04-10'));
+  });
+
+  it('returns a bigint', () => {
+    assert.equal(typeof seedFromDay('2026-04-09'), 'bigint');
   });
 });

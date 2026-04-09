@@ -20,6 +20,11 @@ export class HashCheck {
   // tick → peerId → hash
   private readonly perTick = new Map<Tick, Map<string, string>>();
 
+  /** Clear all stored hashes (used after midnight reset). */
+  clear(): void {
+    this.perTick.clear();
+  }
+
   static isCadenceTick(tick: Tick): boolean {
     return tick > 0 && tick % HASH_INTERVAL_TICKS === 0;
   }

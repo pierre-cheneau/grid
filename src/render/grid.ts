@@ -58,6 +58,7 @@ export function buildFrame(
   camera: Camera,
   localId: PlayerId,
   hash?: string,
+  recapText?: string,
 ): string[] {
   const viewCellsW = Math.floor(viewport.cols / CELL_WIDTH);
   const viewH = viewport.rows - 1; // 1 row reserved for status
@@ -94,8 +95,10 @@ export function buildFrame(
     );
   }
 
-  // Status row
-  const statusText = buildStatusRow(state, localId, viewport.cols, floorDotFg, hudFg, hash);
+  // Status row — recap text overrides the normal HUD when present (e.g., after midnight).
+  const statusText = recapText
+    ? buildRecapRow(recapText, viewport.cols, floorDotFg, hudFg)
+    : buildStatusRow(state, localId, viewport.cols, floorDotFg, hudFg, hash);
   rows.push(floorBg + statusText + RESET);
 
   return rows;
@@ -254,6 +257,13 @@ function buildViewportRow(
 
   row += RESET;
   return row;
+}
+
+function buildRecapRow(text: string, width: number, dotFg: string, hudFg: string): string {
+  if (text.length >= width) return hudFg + text.slice(0, width);
+  const leftPad = Math.floor((width - text.length) / 2);
+  const rightPad = width - text.length - leftPad;
+  return dotFg + '.'.repeat(leftPad) + hudFg + text + dotFg + '.'.repeat(rightPad);
 }
 
 function buildStatusRow(

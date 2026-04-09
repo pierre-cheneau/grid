@@ -48,4 +48,32 @@ describe('renderEpitaph', () => {
     const out = renderEpitaph(data, 60);
     assert.ok(out.endsWith('\n'));
   });
+
+  it('includes crown labels when provided', () => {
+    const out = stripAnsi(
+      renderEpitaph(
+        {
+          ...data,
+          crowns: [
+            {
+              crown: 'last-standing',
+              winnerId: 'a@host',
+              value: 60000,
+              label: 'Last Standing a@host (1m 0s)',
+            },
+            { crown: 'reaper', winnerId: 'b@host', value: 5, label: 'Reaper b@host (5 kills)' },
+          ],
+          dayTag: '2026-04-09',
+        },
+        80,
+      ),
+    );
+    assert.match(out, /Last Standing a@host/);
+    assert.match(out, /Reaper b@host/);
+  });
+
+  it('omits crown line when no crowns', () => {
+    const out = stripAnsi(renderEpitaph(data, 60));
+    assert.doesNotMatch(out, /Last Standing|Reaper|Mayfly/);
+  });
 });

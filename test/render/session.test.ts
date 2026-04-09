@@ -53,4 +53,33 @@ describe('SessionTracker', () => {
     const s = t.finalize(2000);
     assert.equal(s.durationMs, 1000);
   });
+
+  it('counts cellsPainted on alive ticks only', () => {
+    const t = createSessionTracker(0);
+    t.update(true, 0, 100); // alive → +1
+    t.update(true, 0, 200); // alive → +1
+    t.update(false, 0, 300); // dead → +0
+    t.update(false, 0, 400); // dead → +0
+    t.update(true, 0, 500); // alive → +1
+    const s = t.finalize(600);
+    assert.equal(s.cellsPainted, 3);
+  });
+
+  it('snapshot returns stats without closing the alive streak', () => {
+    const t = createSessionTracker(0);
+    t.update(true, 0, 100);
+    t.update(true, 0, 200);
+    // Snapshot mid-run — longestRunMs should include the open streak
+    const s1 = t.snapshot(300);
+    assert.equal(s1.longestRunMs, 300); // 0→300 open streak
+    assert.equal(s1.cellsPainted, 2);
+    // Continue — the streak extends
+    t.update(true, 0, 400);
+    const s2 = t.snapshot(500);
+    assert.equal(s2.longestRunMs, 500); // 0→500 open streak
+    assert.equal(s2.cellsPainted, 3);
+    // Finalize closes the streak
+    const s3 = t.finalize(600);
+    assert.equal(s3.longestRunMs, 600);
+  });
 });

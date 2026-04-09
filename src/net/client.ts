@@ -130,6 +130,20 @@ export class NetClient {
     }, SEED_TIMEOUT_MS);
   }
 
+  /** Reset the simulation for a new day. Clears all transient state from the
+   *  previous day while keeping the room connection intact — peers reset
+   *  independently at their own midnight detection. */
+  resetForNewDay(state: GridState): void {
+    this.lockstep.reset(state);
+    this.hashCheck.clear();
+    this.evictTracker.clear();
+    this.faultCounts.clear();
+    this.pendingStateResponses.clear();
+    this.currentChainHash = GENESIS_HASH;
+    this.cachedHash = '';
+    dbg(`client[${this.localId}]: reset for new day at tick ${state.tick}`);
+  }
+
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
