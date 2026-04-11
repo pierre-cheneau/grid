@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// GRID — Stage 4 CLI driver. Wires NetClient + intro animation + renderer + epitaph.
+// GRID — CLI driver. Wires NetClient + Nostr persistence + intro + renderer + epitaph.
 //
-// Flow: resolveIdentity → client.start() → tryMaximize → playIntro (1.5s, overlaps
-// WebRTC handshake) → game loop (10fps render) → shutdown → epitaph to scrollback.
+// Flow: resolveIdentity → NostrPool → cold start (Nostr/local/empty) → client.start()
+// → tryMaximize → playIntro → game loop (10fps render + Nostr publish) → shutdown.
 
 import { createWriteStream } from 'node:fs';
 import { argv, exit, pid, stdin, stdout } from 'node:process';
@@ -12,15 +12,18 @@ import type { LocalIdentity } from '../id/identity.js';
 import { TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
+import { NostrPool } from '../net/nostr.js';
 import { createTrysteroRoom } from '../net/room.js';
 import { dayStartMs, seedFromDay, tickAtTime, todayTag } from '../net/time.js';
 import {
+  NostrPublisher,
   compressSnapshot,
   decodeSnapshot,
   decompressSnapshot,
   encodeSnapshot,
   filterExpiredCells,
   loadLocalSnapshot,
+  loadNostrSnapshot,
   saveLocalSnapshot,
 } from '../persist/index.js';
 import { rgbFromColorSeed } from '../render/color.js';
@@ -86,7 +89,7 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
     width: opts['width'] ? Number.parseInt(opts['width'], 10) : 0,
     height: opts['height'] ? Number.parseInt(opts['height'], 10) : 0,
     seed: opts['seed'] ? BigInt(opts['seed']) : 0xc0ffee_deadbeefn,
-    halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 100,
+    halfLifeTicks: opts['half-life-ticks'] ? Number.parseInt(opts['half-life-ticks'], 10) : 600,
     name: opts['name'] ?? null,
     debug: opts['debug'] === 'true',
     relayUrls: opts['relay'] ? opts['relay'].split(',') : [],
@@ -115,11 +118,46 @@ function makeLocalPlayer(localId: string, colorSeed: number, w: number, h: numbe
   };
 }
 
+/** Cold start cell loader: try Nostr, fall back to local file, fall back to empty. */
+async function loadColdStartCells(
+  pool: NostrPool,
+  dayTag: string,
+  config: Config,
+  currentTick: number,
+  debug: boolean,
+): Promise<Map<string, import('../sim/index.js').Cell>> {
+  const nostrResult = await loadNostrSnapshot(pool, dayTag, config, currentTick).catch(() => null);
+  if (nostrResult !== null) {
+    if (debug) {
+      process.stderr.write(`grid: loaded ${nostrResult.cells.size} cells from Nostr\n`);
+    }
+    return nostrResult.cells;
+  }
+  const persistedBytes = await loadLocalSnapshot(dayTag);
+  if (persistedBytes !== null) {
+    try {
+      const raw = decompressSnapshot(persistedBytes);
+      const snap = decodeSnapshot(raw);
+      const freshCells = filterExpiredCells(snap.cells, currentTick, snap.config.halfLifeTicks);
+      if (debug) {
+        process.stderr.write(
+          `grid: loaded ${freshCells.size} cells from local snapshot (${snap.cells.size} total, ${snap.cells.size - freshCells.size} expired)\n`,
+        );
+      }
+      return freshCells;
+    } catch {
+      // fall through to empty
+    }
+  }
+  return new Map();
+}
+
 function makeInitialState(
   cfg: CliConfig,
   localId: string,
   colorSeed: number,
   tick: number,
+  cells: Map<string, import('../sim/index.js').Cell> = new Map(),
 ): GridState {
   const config = makeGameConfig(cfg);
   const player = makeLocalPlayer(localId, colorSeed, cfg.width, cfg.height);
@@ -128,7 +166,7 @@ function makeInitialState(
     config,
     rng: newRng(cfg.seed),
     players: new Map([[localId, player]]),
-    cells: new Map(),
+    cells,
   };
 }
 
@@ -175,6 +213,8 @@ function setupShutdown(
   client: NetClient,
   renderer: RendererHandle,
   tracker: SessionTracker,
+  publisher: NostrPublisher,
+  pool: NostrPool,
   id: LocalIdentity,
   getDayTag: () => string,
   getCrowns: () => Crown[],
@@ -191,7 +231,17 @@ function setupShutdown(
     if (state.cells.size > 0) {
       const raw = encodeSnapshot({ tick: state.tick, config: state.config, cells: state.cells });
       await saveLocalSnapshot(currentDayTag, compressSnapshot(raw)).catch(() => {});
+      // Await the final Nostr publish so relay sockets aren't torn down mid-flight.
+      await publisher.publishNow(
+        state.tick,
+        state.cells,
+        client.stateHash,
+        client.chainHash,
+        state.players.size,
+      );
     }
+
+    pool.close();
 
     const stats = tracker.finalize(Date.now());
     const crowns = getCrowns();
@@ -262,33 +312,17 @@ async function main(): Promise<void> {
   const baseId = await resolveIdentity();
   const id = cfg.name === null ? baseId : rebaseIdentity(baseId, cfg.name);
 
-  // Cold start: try loading persisted cell state from a previous session today.
-  let initialState: GridState;
-  const persistedBytes = await loadLocalSnapshot(dayTag);
-  if (persistedBytes !== null) {
-    try {
-      const raw = decompressSnapshot(persistedBytes);
-      const snap = decodeSnapshot(raw);
-      const freshCells = filterExpiredCells(snap.cells, currentTick, snap.config.halfLifeTicks);
-      const player = makeLocalPlayer(id.id, id.colorSeed, gridW, gridH);
-      initialState = {
-        tick: currentTick,
-        config: makeGameConfig(gridCfg),
-        rng: newRng(gridCfg.seed),
-        players: new Map([[id.id, player]]),
-        cells: freshCells,
-      };
-      if (cfg.debug) {
-        process.stderr.write(
-          `grid: loaded ${freshCells.size} cells from local snapshot (${snap.cells.size} total, ${snap.cells.size - freshCells.size} expired)\n`,
-        );
-      }
-    } catch {
-      initialState = makeInitialState(gridCfg, id.id, id.colorSeed, currentTick);
-    }
-  } else {
-    initialState = makeInitialState(gridCfg, id.id, id.colorSeed, currentTick);
-  }
+  // Nostr relay pool for persistence (cell snapshots, chain attestations).
+  const pool = new NostrPool({
+    seckey: id.nostrSeckey,
+    pubkey: id.nostrPubkey,
+    ...(gridCfg.relayUrls.length > 0 ? { relayUrls: gridCfg.relayUrls } : {}),
+  });
+
+  // Cold start: Nostr (global) → local file (own session) → empty grid.
+  const gameConfig = makeGameConfig(gridCfg);
+  const cells = await loadColdStartCells(pool, dayTag, gameConfig, currentTick, cfg.debug);
+  const initialState = makeInitialState(gridCfg, id.id, id.colorSeed, currentTick, cells);
 
   const client = new NetClient(
     {
@@ -324,6 +358,7 @@ async function main(): Promise<void> {
 
   const tracker = createSessionTracker(Date.now());
   const renderer = setupRenderer(id.id, writer, gridW, gridH);
+  const publisher = new NostrPublisher(pool, dayTag, gameConfig);
 
   // Midnight reset state.
   let currentDay = dayTag;
@@ -336,6 +371,8 @@ async function main(): Promise<void> {
     client,
     renderer,
     tracker,
+    publisher,
+    pool,
     id,
     () => currentDay,
     () => lastCrowns,
@@ -355,7 +392,7 @@ async function main(): Promise<void> {
         const sessionSnap = tracker.snapshot(now);
         lastCrowns = computeAllCrowns(dayStats, sessionSnap, id.id);
 
-        // Save final cell snapshot for the ended day.
+        // Save final cell snapshot for the ended day (local + Nostr).
         const state = client.currentState;
         if (state.cells.size > 0) {
           const raw = encodeSnapshot({
@@ -364,6 +401,15 @@ async function main(): Promise<void> {
             cells: state.cells,
           });
           saveLocalSnapshot(currentDay, compressSnapshot(raw)).catch(() => {});
+          publisher
+            .publishNow(
+              state.tick,
+              state.cells,
+              client.stateHash,
+              client.chainHash,
+              state.players.size,
+            )
+            .catch(() => {});
         }
 
         // Show recap in the status bar briefly after midnight.
@@ -376,6 +422,8 @@ async function main(): Promise<void> {
         const newSeed = seedFromDay(newDay);
         const newCfg = { ...gridCfg, seed: newSeed };
         client.resetForNewDay(makeInitialState(newCfg, id.id, id.colorSeed, newTick));
+        publisher.resetForNewDay(newDay);
+        publisher.publishWorldConfig(gridW, gridH, newSeed.toString(16));
         dayTracker = new DayTracker();
         currentDay = newDay;
       }
@@ -386,6 +434,13 @@ async function main(): Promise<void> {
         const me = result.players.get(id.id);
         if (me) tracker.update(me.isAlive, me.score, now);
         dayTracker.observe(result, now);
+        publisher.onTick(
+          result.tick,
+          result.cells,
+          client.stateHash,
+          client.chainHash,
+          result.players.size,
+        );
         const recap = now < recapEndAt ? recapLine : undefined;
         renderer.render(result, client.stateHash, recap);
       }
