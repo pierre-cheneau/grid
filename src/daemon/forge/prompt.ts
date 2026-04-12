@@ -30,6 +30,9 @@ export function buildForgePrompt(opts: ForgePromptOpts): string {
   parts.push(
     'Read the daemon reference below, then produce a single self-contained Node.js script.',
   );
+  parts.push(
+    'The script will be saved as a .cjs file — use require() and module.exports (CommonJS).',
+  );
   parts.push('Output ONLY the script — no markdown fences, no commentary, no explanation.');
   parts.push('The script must use only Node.js built-in modules (no npm packages).');
   parts.push('The script must be under 4096 bytes (UTF-8).');

@@ -16,6 +16,9 @@ export function createSubprocessTransport(scriptPath: string): DaemonTransport {
   let exitCallback: ((code: number | null, error?: string) => void) | null = null;
   let exited = false;
 
+  // Swallow EPIPE on stdin — the daemon may exit before we stop writing.
+  child.stdin?.on('error', () => {});
+
   // stdio is 'pipe' so stdout/stderr are guaranteed non-null.
   // biome-ignore lint/style/noNonNullAssertion: stdio: 'pipe' guarantees non-null
   const rl = createInterface({ input: child.stdout! });

@@ -53,7 +53,7 @@ export async function runForgeCli(args: string[]): Promise<void> {
 
   // --show: just print the daemon source and exit.
   if (showName !== null) {
-    const path = join(DAEMONS_DIR, `${showName}.js`);
+    const path = join(DAEMONS_DIR, `${showName}.cjs`);
     if (!existsSync(path)) {
       process.stderr.write(`forge: daemon "${showName}" not found at ${path}\n`);
       process.exit(1);
@@ -82,7 +82,7 @@ export async function runForgeCli(args: string[]): Promise<void> {
   // Load existing source for --refine.
   let existingSource: string | undefined;
   if (refineName !== null) {
-    const path = join(DAEMONS_DIR, `${refineName}.js`);
+    const path = join(DAEMONS_DIR, `${refineName}.cjs`);
     if (!existsSync(path)) {
       process.stderr.write(`forge: daemon "${refineName}" not found at ${path}\n`);
       process.exit(1);
@@ -143,7 +143,8 @@ export async function runForgeCli(args: string[]): Promise<void> {
   // Save the daemon.
   const name = refineName ?? nameFromDescription(description);
   ensureDir(DAEMONS_DIR);
-  const outPath = join(DAEMONS_DIR, `${name}.js`);
+  // Use .cjs so daemons can use require() even when the project has "type": "module".
+  const outPath = join(DAEMONS_DIR, `${name}.cjs`);
   writeFileSync(outPath, script, 'utf-8');
   const finalBytes = Buffer.byteLength(script, 'utf-8');
 
@@ -156,12 +157,12 @@ export async function runForgeCli(args: string[]): Promise<void> {
   if (result.passed) {
     const pct = Math.round((finalBytes / DAEMON_MAX_SOURCE_BYTES) * 100);
     process.stderr.write(
-      `\n✓ ${name}.js — ${finalBytes} bytes / ${DAEMON_MAX_SOURCE_BYTES} max  (${pct}% of cap)\n`,
+      `\n✓ ${name}.cjs — ${finalBytes} bytes / ${DAEMON_MAX_SOURCE_BYTES} max  (${pct}% of cap)\n`,
     );
     process.stderr.write(`  survived ${result.survivalTicks} ticks in sandbox\n`);
     process.stderr.write(`  ready to deploy: npx grid --deploy ${outPath}\n\n`);
   } else {
-    process.stderr.write(`\n✗ ${name}.js — sandbox failed\n`);
+    process.stderr.write(`\n✗ ${name}.cjs — sandbox failed\n`);
     if (result.error) process.stderr.write(`  error: ${result.error}\n`);
     process.stderr.write(`  survived ${result.survivalTicks} ticks (need 30+)\n`);
     process.stderr.write(
