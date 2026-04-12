@@ -56,7 +56,7 @@ export class NetClient {
   private readonly faultCounts = new Map<string, number>();
   private readonly pendingStateResponses = new Set<string>();
   private room: Room | null = null;
-  private daemonBridge: DaemonBridge | null = null;
+  private readonly daemonBridges = new Map<string, DaemonBridge>();
   private stopped = false;
   private seedTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRunOnceAt = 0;
@@ -144,10 +144,11 @@ export class NetClient {
     this.pendingStateResponses.clear();
     this.currentChainHash = GENESIS_HASH;
     this.cachedHash = '';
-    if (this.daemonBridge?.isRunning) {
-      const dId = this.daemonBridge.daemonId;
-      this.lockstep.addPeer(dId);
-      this.lockstep.queueJoin({ id: dId, colorSeed: this.daemonBridge.colorSeed });
+    for (const bridge of this.daemonBridges.values()) {
+      if (bridge.isRunning) {
+        this.lockstep.addPeer(bridge.daemonId);
+        this.lockstep.queueJoin({ id: bridge.daemonId, colorSeed: bridge.colorSeed });
+      }
     }
     dbg(`client[${this.localId}]: reset for new day at tick ${state.tick}`);
   }
@@ -155,8 +156,8 @@ export class NetClient {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    this.daemonBridge?.stop();
-    this.daemonBridge = null;
+    for (const bridge of this.daemonBridges.values()) bridge.stop();
+    this.daemonBridges.clear();
     if (this.seedTimer !== null) clearTimeout(this.seedTimer);
     if (this.room) {
       this.room.sendCtrl(encodeMessage({ v: 1, t: 'BYE', from: this.localId }));
@@ -171,11 +172,12 @@ export class NetClient {
 
   /** Deploy a daemon alongside the pilot. The daemon becomes a second local
    *  player whose inputs are injected into lockstep and broadcast to peers. */
-  async deployDaemon(config: DaemonBridgeConfig): Promise<void> {
-    // Stop any existing daemon before deploying a new one.
-    if (this.daemonBridge !== null) {
-      this.daemonBridge.stop();
-      this.daemonBridge = null;
+  async deployDaemon(config: DaemonBridgeConfig): Promise<{ sourceBytes: number }> {
+    // Stop existing daemon with the same ID if any.
+    const existing = this.daemonBridges.get(config.daemonId);
+    if (existing) {
+      existing.stop();
+      this.daemonBridges.delete(config.daemonId);
     }
     const deps: DaemonBridgeDeps = {
       broadcastInput: (id, tick, turn) => {
@@ -191,9 +193,10 @@ export class NetClient {
     };
     const bridge = new DaemonBridge(config, deps);
     await bridge.start();
-    this.daemonBridge = bridge;
+    this.daemonBridges.set(config.daemonId, bridge);
     this.broadcastDaemonHello(config);
     dbg(`client[${this.localId}]: daemon ${config.daemonId} deployed`);
+    return { sourceBytes: bridge.sourceBytes };
   }
 
   runOnce(now: number): GridState | null {
@@ -219,7 +222,9 @@ export class NetClient {
       );
     }
     this.drainPendingStateResponses();
-    if (this.daemonBridge?.isRunning) this.daemonBridge.onTick(newState);
+    for (const bridge of this.daemonBridges.values()) {
+      if (bridge.isRunning) bridge.onTick(newState);
+    }
     for (const cb of this.tickListeners) cb(newState);
     if (HashCheck.isCadenceTick(newState.tick)) {
       this.room.sendTick(

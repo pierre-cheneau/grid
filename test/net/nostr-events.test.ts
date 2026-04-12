@@ -28,6 +28,34 @@ describe('buildWorldConfigEvent', () => {
     assert.equal(findTag(evt.tags, 'seed'), 'abc123');
     assert.ok(evt.created_at > 0);
   });
+
+  it('includes peak tag when provided', () => {
+    const evt = buildWorldConfigEvent('2026-04-09', 250, 250, 'seed', undefined, 42);
+    assert.equal(findTag(evt.tags, 'peak'), '42');
+  });
+
+  it('omits peak tag when undefined', () => {
+    const evt = buildWorldConfigEvent('2026-04-09', 250, 250, 'seed');
+    assert.equal(findTag(evt.tags, 'peak'), undefined);
+  });
+
+  it('includes relay tags when provided', () => {
+    const evt = buildWorldConfigEvent('2026-04-09', 250, 250, 'seed', undefined, undefined, [
+      { tileRange: '0-3,0-3', relayUrl: 'wss://relay1.example.com' },
+      { tileRange: '4-7,0-3', relayUrl: 'wss://relay2.example.com' },
+    ]);
+    const relayTags = evt.tags.filter((t) => t[0] === 'relay');
+    assert.equal(relayTags.length, 2);
+    assert.equal(relayTags[0]?.[1], '0-3,0-3');
+    assert.equal(relayTags[0]?.[2], 'wss://relay1.example.com');
+    assert.equal(relayTags[1]?.[1], '4-7,0-3');
+  });
+
+  it('backward compat: no peak or relay produces minimal event', () => {
+    const evt = buildWorldConfigEvent('2026-04-09', 250, 250, 'seed');
+    // Only 4 tags: d, w, h, seed
+    assert.equal(evt.tags.length, 4);
+  });
 });
 
 describe('buildCellSnapshotEvent', () => {

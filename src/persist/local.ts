@@ -31,6 +31,28 @@ export async function loadLocalSnapshot(
   }
 }
 
+/** Load yesterday's peak concurrent player count, or 0 if none saved. */
+export async function loadPeakConcurrent(cacheDir?: string): Promise<number> {
+  try {
+    const raw = await readFile(join(cacheDir ?? defaultDir(), 'peak.json'), 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.peak === 'number' && parsed.peak >= 0) return parsed.peak;
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Save today's peak concurrent player count for tomorrow's world sizing. */
+export async function savePeakConcurrent(peak: number, cacheDir?: string): Promise<void> {
+  const dir = cacheDir ?? defaultDir();
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, 'peak.json');
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, JSON.stringify({ peak }), 'utf-8');
+  await rename(tmp, path);
+}
+
 /** Save a compressed snapshot for the given day. Best-effort — failures are silent. */
 export async function saveLocalSnapshot(
   dayTag: string,

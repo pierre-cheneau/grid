@@ -14,10 +14,20 @@ export interface PlayerDayStats {
   kills: number;
   /** Last observed score — used to compute kill deltas. */
   lastScore: number;
+  /** Accumulated cell-tick area integral (sampled every 10 ticks). For Architect. */
+  cellIntegral: number;
+  /** Set of distinct victim IDs killed by this player. For Catalyst. */
+  distinctVictims: Set<PlayerId>;
 }
 
-/** Identifiers for the crowns computed in v0.1. */
-export type CrownId = 'last-standing' | 'reaper' | 'mayfly';
+/** Identifiers for the six daily crowns. */
+export type CrownId =
+  | 'last-standing'
+  | 'reaper'
+  | 'mayfly'
+  | 'architect'
+  | 'catalyst'
+  | 'minimalist';
 
 /** A crown awarded to a player for the day. */
 export interface Crown {
@@ -33,4 +43,6 @@ export interface DayStats {
   readonly peakConcurrent: number;
   readonly totalKills: number;
   readonly playerCount: number;
+  /** Source byte counts for daemon players. For Minimalist crown. */
+  readonly daemonSourceBytes: ReadonlyMap<PlayerId, number>;
 }

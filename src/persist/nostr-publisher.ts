@@ -56,8 +56,10 @@ export class NostrPublisher {
   }
 
   /** Publish world config event (at midnight reset). Fire-and-forget. */
-  publishWorldConfig(width: number, height: number, seed: string): void {
-    this.pool.publishFireAndForget(buildWorldConfigEvent(this.dayTag, width, height, seed));
+  publishWorldConfig(width: number, height: number, seed: string, peak?: number): void {
+    this.pool.publishFireAndForget(
+      buildWorldConfigEvent(this.dayTag, width, height, seed, undefined, peak),
+    );
   }
 
   /** Update the dayTag on midnight reset. */

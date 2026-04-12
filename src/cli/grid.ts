@@ -26,7 +26,9 @@ import {
   filterExpiredCells,
   loadLocalSnapshot,
   loadNostrSnapshot,
+  loadPeakConcurrent,
   saveLocalSnapshot,
+  savePeakConcurrent,
 } from '../persist/index.js';
 import { rgbFromColorSeed } from '../render/color.js';
 import {
@@ -49,7 +51,12 @@ import {
   hashState,
   newRng,
 } from '../sim/index.js';
-import { DayTracker, computeAllCrowns } from '../stats/index.js';
+import {
+  DayTracker,
+  computeAllCrowns,
+  computeWorldDiameter,
+  extractKills,
+} from '../stats/index.js';
 import type { Crown } from '../stats/types.js';
 
 interface CliConfig {
@@ -63,6 +70,7 @@ interface CliConfig {
   readonly relayUrls: ReadonlyArray<string>;
   readonly deploy: string | null;
   readonly inprocess: boolean;
+  readonly seedDaemons: boolean;
 }
 
 /** How long the recap text is shown in the status bar after midnight (ms). */
@@ -99,6 +107,7 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
     relayUrls: opts['relay'] ? opts['relay'].split(',') : [],
     deploy: opts['deploy'] ?? null,
     inprocess: opts['inprocess'] === 'true',
+    seedDaemons: opts['seed-daemons'] === 'true',
   };
 }
 
@@ -224,12 +233,17 @@ function setupShutdown(
   id: LocalIdentity,
   getDayTag: () => string,
   getCrowns: () => Crown[],
+  getDayTracker: () => DayTracker,
 ): () => Promise<void> {
   let stopping = false;
   return async () => {
     if (stopping) return;
     stopping = true;
     renderer.shutdown();
+
+    // Save peak concurrent for tomorrow's world sizing (best-effort).
+    const daySnap = getDayTracker().snapshot(Date.now());
+    savePeakConcurrent(daySnap.peakConcurrent).catch(() => {});
 
     // Persist cell state for the next session (best-effort).
     const state = client.currentState;
@@ -311,11 +325,12 @@ async function main(): Promise<void> {
     await tryMaximize(stdout);
   }
 
-  // World dimensions (in cells). Default 500×500 circular — each cell renders as
-  // 2 terminal chars wide, so a square grid looks square on screen. Override via
-  // --width/--height for testing.
-  const gridW = cfg.width > 0 ? cfg.width : 250;
-  const gridH = cfg.height > 0 ? cfg.height : 250;
+  // World dimensions: scale from yesterday's peak concurrent, or use manual
+  // overrides, or default to 250 on first run.
+  const yesterdayPeak = await loadPeakConcurrent();
+  const autoSize = yesterdayPeak > 0 ? computeWorldDiameter(yesterdayPeak) : 250;
+  const gridW = cfg.width > 0 ? cfg.width : autoSize;
+  const gridH = cfg.height > 0 ? cfg.height : autoSize;
   const gridCfg = { ...cfg, width: gridW, height: gridH };
 
   // Time-anchored ticks: the tick number corresponds to wall-clock time within
@@ -374,22 +389,6 @@ async function main(): Promise<void> {
     // overwriting the intro seamlessly.
   }
 
-  // Deploy daemon if requested.
-  if (cfg.deploy !== null) {
-    const scriptPath = resolve(cfg.deploy);
-    const base = basename(scriptPath, extname(scriptPath));
-    const dId = daemonPlayerId(base, id.id);
-    const dColor = daemonColorSeed(dId);
-    await client.deployDaemon({
-      scriptPath,
-      daemonId: dId,
-      colorSeed: dColor,
-      gridWidth: gridW,
-      gridHeight: gridH,
-    });
-    if (cfg.debug) process.stderr.write(`grid: daemon ${dId} deployed\n`);
-  }
-
   const tracker = createSessionTracker(Date.now());
   const renderer = setupRenderer(id.id, writer, gridW, gridH);
   const publisher = new NostrPublisher(pool, dayTag, gameConfig);
@@ -401,6 +400,52 @@ async function main(): Promise<void> {
   let recapEndAt = 0;
   let recapLine = '';
 
+  // Deploy daemon if requested (after dayTracker so we can register source bytes).
+  if (cfg.deploy !== null) {
+    const scriptPath = resolve(cfg.deploy);
+    const base = basename(scriptPath, extname(scriptPath));
+    const dId = daemonPlayerId(base, id.id);
+    const dColor = daemonColorSeed(dId);
+    const { sourceBytes } = await client.deployDaemon({
+      scriptPath,
+      daemonId: dId,
+      colorSeed: dColor,
+      gridWidth: gridW,
+      gridHeight: gridH,
+    });
+    dayTracker.registerDaemon(dId, sourceBytes);
+    if (cfg.debug) process.stderr.write(`grid: daemon ${dId} deployed (${sourceBytes} bytes)\n`);
+  }
+
+  // Deploy seed daemons if requested (populates empty grids with bots).
+  if (cfg.seedDaemons) {
+    const daemonDir = resolve(
+      new URL('.', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'),
+      '../../examples/daemons',
+    );
+    const seeds = ['right-turner.cjs', 'random-walker.cjs', 'spiral.cjs', 'hunter.cjs'];
+    for (const name of seeds) {
+      const scriptPath = resolve(daemonDir, name);
+      const base = basename(name, extname(name));
+      const dId = daemonPlayerId(base, id.id);
+      const dColor = daemonColorSeed(dId);
+      try {
+        const { sourceBytes } = await client.deployDaemon({
+          scriptPath,
+          daemonId: dId,
+          colorSeed: dColor,
+          gridWidth: gridW,
+          gridHeight: gridH,
+        });
+        dayTracker.registerDaemon(dId, sourceBytes);
+        if (cfg.debug)
+          process.stderr.write(`grid: seed daemon ${dId} deployed (${sourceBytes} bytes)\n`);
+      } catch (err) {
+        process.stderr.write(`grid: seed daemon ${name} failed: ${err}\n`);
+      }
+    }
+  }
+
   const shutdown = setupShutdown(
     client,
     renderer,
@@ -410,6 +455,7 @@ async function main(): Promise<void> {
     id,
     () => currentDay,
     () => lastCrowns,
+    () => dayTracker,
   );
   setupKeyboard(client, shutdown);
   process.on('SIGINT', () => void shutdown());
@@ -446,28 +492,40 @@ async function main(): Promise<void> {
             .catch(() => {});
         }
 
+        // Save peak concurrent for tomorrow's world sizing.
+        savePeakConcurrent(dayStats.peakConcurrent).catch(() => {});
+
         // Show recap in the status bar briefly after midnight.
         recapLine = lastCrowns.map((c) => c.label).join(' · ') || 'no crowns today';
         recapEndAt = now + RECAP_DISPLAY_MS;
 
-        // Reset for the new day.
+        // Reset for the new day with world size scaled from today's peak.
         const newDayStart = dayStartMs(now);
         const newTick = tickAtTime(now, newDayStart);
         const newSeed = seedFromDay(newDay);
-        const newCfg = { ...gridCfg, seed: newSeed };
+        const newSize = computeWorldDiameter(dayStats.peakConcurrent);
+        const newW =
+          gridCfg.width > 0 ? gridCfg.width : dayStats.peakConcurrent > 0 ? newSize : 250;
+        const newH =
+          gridCfg.height > 0 ? gridCfg.height : dayStats.peakConcurrent > 0 ? newSize : 250;
+        const newCfg = { ...gridCfg, width: newW, height: newH, seed: newSeed };
         client.resetForNewDay(makeInitialState(newCfg, id.id, id.colorSeed, newTick));
         publisher.resetForNewDay(newDay);
-        publisher.publishWorldConfig(gridW, gridH, newSeed.toString(16));
+        publisher.publishWorldConfig(newW, newH, newSeed.toString(16), dayStats.peakConcurrent);
         dayTracker = new DayTracker();
         currentDay = newDay;
       }
 
       // Normal tick.
+      const prevState = client.currentState;
       const result = client.runOnce(now);
       if (result !== null) {
         const me = result.players.get(id.id);
         if (me) tracker.update(me.isAlive, me.score, now);
         dayTracker.observe(result, now);
+        // Extract kill events for Catalyst crown (distinct victim tracking).
+        const kills = extractKills(prevState, result);
+        if (kills.length > 0) dayTracker.observeKills(kills);
         publisher.onTick(
           result.tick,
           result.cells,

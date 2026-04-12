@@ -7,11 +7,16 @@
 import type { GridState, PlayerId } from '../sim/types.js';
 import type { DayStats, PlayerDayStats } from './types.js';
 
+/** Cell integral sampling interval in ticks (~1s at 10 tps). */
+const CELL_SAMPLE_INTERVAL = 10;
+
 export class DayTracker {
   private readonly stats = new Map<PlayerId, PlayerDayStats>();
   private readonly wasAlive = new Map<PlayerId, boolean>();
+  private readonly daemonBytes = new Map<PlayerId, number>();
   private peakConcurrent = 0;
   private totalKills = 0;
+  private lastCellSampleTick = -CELL_SAMPLE_INTERVAL;
 
   /** Call every tick with the current state and wall-clock time. */
   observe(state: GridState, now: number): void {
@@ -27,6 +32,8 @@ export class DayTracker {
           currentAliveStart: player.isAlive ? now : null,
           kills: 0,
           lastScore: player.score,
+          cellIntegral: 0,
+          distinctVictims: new Set(),
         };
         this.stats.set(id, ps);
         this.wasAlive.set(id, player.isAlive);
@@ -59,6 +66,28 @@ export class DayTracker {
     }
 
     if (aliveCount > this.peakConcurrent) this.peakConcurrent = aliveCount;
+
+    // Cell integral sampling: count cells per owner periodically.
+    if (state.tick - this.lastCellSampleTick >= CELL_SAMPLE_INTERVAL) {
+      this.lastCellSampleTick = state.tick;
+      for (const cell of state.cells.values()) {
+        const ps = this.stats.get(cell.ownerId);
+        if (ps !== undefined) ps.cellIntegral += CELL_SAMPLE_INTERVAL;
+      }
+    }
+  }
+
+  /** Record killer→victim pairs for the Catalyst crown. */
+  observeKills(kills: ReadonlyArray<{ killer: PlayerId; victim: PlayerId }>): void {
+    for (const { killer, victim } of kills) {
+      const ps = this.stats.get(killer);
+      if (ps) ps.distinctVictims.add(victim);
+    }
+  }
+
+  /** Register a daemon's source byte count for the Minimalist crown. */
+  registerDaemon(id: PlayerId, sourceBytes: number): void {
+    this.daemonBytes.set(id, sourceBytes);
   }
 
   /** Non-destructive snapshot: returns current stats without closing open streaks.
@@ -72,13 +101,18 @@ export class DayTracker {
         const run = now - ps.currentAliveStart;
         if (run > longest) longest = run;
       }
-      snapped.set(id, { ...ps, longestAliveMs: longest });
+      snapped.set(id, {
+        ...ps,
+        longestAliveMs: longest,
+        distinctVictims: new Set(ps.distinctVictims),
+      });
     }
     return {
       players: snapped,
       peakConcurrent: this.peakConcurrent,
       totalKills: this.totalKills,
       playerCount: this.stats.size,
+      daemonSourceBytes: new Map(this.daemonBytes),
     };
   }
 
@@ -96,6 +130,7 @@ export class DayTracker {
       peakConcurrent: this.peakConcurrent,
       totalKills: this.totalKills,
       playerCount: this.stats.size,
+      daemonSourceBytes: this.daemonBytes,
     };
   }
 }

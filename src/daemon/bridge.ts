@@ -40,6 +40,7 @@ export class DaemonBridge {
   private running = false;
   private consecutiveErrors = 0;
   private lastTickSent = -1;
+  private _sourceBytes = 0;
 
   constructor(config: DaemonBridgeConfig, deps: DaemonBridgeDeps) {
     this.config = config;
@@ -58,14 +59,18 @@ export class DaemonBridge {
     return this.config.colorSeed;
   }
 
+  get sourceBytes(): number {
+    return this._sourceBytes;
+  }
+
   /** Validate source size, launch transport, perform handshake. */
   async start(): Promise<DaemonHelloAck> {
     // Validate source size.
     const source = readFileSync(this.config.scriptPath, 'utf-8').replace(/\r\n/g, '\n');
-    const byteCount = Buffer.byteLength(source, 'utf-8');
-    if (byteCount > DAEMON_MAX_SOURCE_BYTES) {
+    this._sourceBytes = Buffer.byteLength(source, 'utf-8');
+    if (this._sourceBytes > DAEMON_MAX_SOURCE_BYTES) {
       throw new Error(
-        `daemon is ${byteCount} bytes, max is ${DAEMON_MAX_SOURCE_BYTES} — try removing comments or simplifying logic`,
+        `daemon is ${this._sourceBytes} bytes, max is ${DAEMON_MAX_SOURCE_BYTES} — try removing comments or simplifying logic`,
       );
     }
 

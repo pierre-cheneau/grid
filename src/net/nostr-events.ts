@@ -19,6 +19,11 @@ function unixSec(nowMs: number): number {
   return Math.floor(nowMs / 1000);
 }
 
+export interface RelayMapping {
+  readonly tileRange: string;
+  readonly relayUrl: string;
+}
+
 /** Build a world config event for a given day. */
 export function buildWorldConfigEvent(
   dayTag: string,
@@ -26,18 +31,20 @@ export function buildWorldConfigEvent(
   height: number,
   seed: string,
   now: number = Date.now(),
+  peak?: number,
+  relayMap?: ReadonlyArray<RelayMapping>,
 ): EventTemplate {
-  return {
-    kind: NOSTR_KIND_WORLD_CONFIG,
-    tags: [
-      ['d', `grid:${dayTag}`],
-      ['w', String(width)],
-      ['h', String(height)],
-      ['seed', seed],
-    ],
-    content: '',
-    created_at: unixSec(now),
-  };
+  const tags: string[][] = [
+    ['d', `grid:${dayTag}`],
+    ['w', String(width)],
+    ['h', String(height)],
+    ['seed', seed],
+  ];
+  if (peak !== undefined) tags.push(['peak', String(peak)]);
+  if (relayMap) {
+    for (const m of relayMap) tags.push(['relay', m.tileRange, m.relayUrl]);
+  }
+  return { kind: NOSTR_KIND_WORLD_CONFIG, tags, content: '', created_at: unixSec(now) };
 }
 
 /** Build a cell snapshot event for a tile. */
