@@ -5,7 +5,9 @@
 // → tryMaximize → playIntro → game loop (10fps render + Nostr publish) → shutdown.
 
 import { createWriteStream } from 'node:fs';
+import { basename, extname, resolve } from 'node:path';
 import { argv, exit, pid, stdin, stdout } from 'node:process';
+import { daemonColorSeed, daemonPlayerId } from '../daemon/id.js';
 import { resolveIdentity } from '../id/cache.js';
 import { rebaseIdentity } from '../id/identity.js';
 import type { LocalIdentity } from '../id/identity.js';
@@ -59,6 +61,8 @@ interface CliConfig {
   readonly name: string | null;
   readonly debug: boolean;
   readonly relayUrls: ReadonlyArray<string>;
+  readonly deploy: string | null;
+  readonly inprocess: boolean;
 }
 
 /** How long the recap text is shown in the status bar after midnight (ms). */
@@ -93,6 +97,8 @@ function parseArgs(args: ReadonlyArray<string>): CliConfig {
     name: opts['name'] ?? null,
     debug: opts['debug'] === 'true',
     relayUrls: opts['relay'] ? opts['relay'].split(',') : [],
+    deploy: opts['deploy'] ?? null,
+    inprocess: opts['inprocess'] === 'true',
   };
 }
 
@@ -282,6 +288,13 @@ function setupKeyboard(client: NetClient, shutdown: () => Promise<void>): void {
 }
 
 async function main(): Promise<void> {
+  // Dispatch to forge if the first arg is "forge".
+  if (argv[2] === 'forge') {
+    const { runForgeCli } = await import('../daemon/forge/cli.js');
+    await runForgeCli(argv.slice(3));
+    return;
+  }
+
   const cfg = parseArgs(argv.slice(2));
   if (cfg.debug) {
     const path = `./grid-debug-${pid}.log`;
@@ -359,6 +372,22 @@ async function main(): Promise<void> {
     );
     // No screen clear needed — the first game frame fills the entire viewport,
     // overwriting the intro seamlessly.
+  }
+
+  // Deploy daemon if requested.
+  if (cfg.deploy !== null) {
+    const scriptPath = resolve(cfg.deploy);
+    const base = basename(scriptPath, extname(scriptPath));
+    const dId = daemonPlayerId(base, id.id);
+    const dColor = daemonColorSeed(dId);
+    await client.deployDaemon({
+      scriptPath,
+      daemonId: dId,
+      colorSeed: dColor,
+      gridWidth: gridW,
+      gridHeight: gridH,
+    });
+    if (cfg.debug) process.stderr.write(`grid: daemon ${dId} deployed\n`);
   }
 
   const tracker = createSessionTracker(Date.now());

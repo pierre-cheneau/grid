@@ -2,6 +2,8 @@
 // peer-registry + sync into a single object. Drives the lockstep loop in pull
 // mode via `runOnce(now)`; the CLI wraps that in a setInterval.
 
+import { DaemonBridge, type DaemonBridgeConfig, type DaemonBridgeDeps } from '../daemon/bridge.js';
+import { createSubprocessTransport } from '../daemon/subprocess-transport.js';
 import { GENESIS_HASH, computeChainHash } from '../persist/chain.js';
 import { type Config, type GridState, type PlayerId, type Turn, hashState } from '../sim/index.js';
 import { FREEZE_THRESHOLD_MS, MAX_PROTOCOL_FAULTS, SEED_TIMEOUT_MS } from './constants.js';
@@ -54,6 +56,7 @@ export class NetClient {
   private readonly faultCounts = new Map<string, number>();
   private readonly pendingStateResponses = new Set<string>();
   private room: Room | null = null;
+  private daemonBridge: DaemonBridge | null = null;
   private stopped = false;
   private seedTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRunOnceAt = 0;
@@ -141,12 +144,19 @@ export class NetClient {
     this.pendingStateResponses.clear();
     this.currentChainHash = GENESIS_HASH;
     this.cachedHash = '';
+    if (this.daemonBridge?.isRunning) {
+      const dId = this.daemonBridge.daemonId;
+      this.lockstep.addPeer(dId);
+      this.lockstep.queueJoin({ id: dId, colorSeed: this.daemonBridge.colorSeed });
+    }
     dbg(`client[${this.localId}]: reset for new day at tick ${state.tick}`);
   }
 
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.daemonBridge?.stop();
+    this.daemonBridge = null;
     if (this.seedTimer !== null) clearTimeout(this.seedTimer);
     if (this.room) {
       this.room.sendCtrl(encodeMessage({ v: 1, t: 'BYE', from: this.localId }));
@@ -157,6 +167,33 @@ export class NetClient {
   setLocalInput(turn: Turn): void {
     this.lockstep.setLocalInput(turn);
     this.broadcastLocalInput();
+  }
+
+  /** Deploy a daemon alongside the pilot. The daemon becomes a second local
+   *  player whose inputs are injected into lockstep and broadcast to peers. */
+  async deployDaemon(config: DaemonBridgeConfig): Promise<void> {
+    // Stop any existing daemon before deploying a new one.
+    if (this.daemonBridge !== null) {
+      this.daemonBridge.stop();
+      this.daemonBridge = null;
+    }
+    const deps: DaemonBridgeDeps = {
+      broadcastInput: (id, tick, turn) => {
+        if (this.room !== null && !this.stopped) {
+          this.room.sendTick(encodeMessage({ v: 1, t: 'INPUT', from: id, tick, i: turn }));
+        }
+      },
+      addPeer: (id) => this.lockstep.addPeer(id),
+      removePeer: (id) => this.lockstep.removePeer(id),
+      queueJoin: (req) => this.lockstep.queueJoin(req),
+      recordInput: (msg) => this.lockstep.recordRemoteInput(msg),
+      createTransport: (path) => createSubprocessTransport(path),
+    };
+    const bridge = new DaemonBridge(config, deps);
+    await bridge.start();
+    this.daemonBridge = bridge;
+    this.broadcastDaemonHello(config);
+    dbg(`client[${this.localId}]: daemon ${config.daemonId} deployed`);
   }
 
   runOnce(now: number): GridState | null {
@@ -182,6 +219,7 @@ export class NetClient {
       );
     }
     this.drainPendingStateResponses();
+    if (this.daemonBridge?.isRunning) this.daemonBridge.onTick(newState);
     for (const cb of this.tickListeners) cb(newState);
     if (HashCheck.isCadenceTick(newState.tick)) {
       this.room.sendTick(
@@ -359,6 +397,26 @@ export class NetClient {
   }
 
   // ---- Internal: helpers ----
+
+  private broadcastDaemonHello(config: DaemonBridgeConfig): void {
+    if (this.room === null) return;
+    this.room.sendCtrl(
+      encodeMessage({
+        v: 1,
+        t: 'HELLO',
+        from: config.daemonId,
+        color: [
+          config.colorSeed & 0xff,
+          (config.colorSeed >> 8) & 0xff,
+          (config.colorSeed >> 16) & 0xff,
+        ],
+        color_seed: config.colorSeed,
+        kind: 'daemon',
+        client: 'grid/0.2.0',
+        joined_at: Math.floor(Date.now() / 1000),
+      }),
+    );
+  }
 
   private broadcastLocalInput(): void {
     if (this.room === null || this.stopped) return;
