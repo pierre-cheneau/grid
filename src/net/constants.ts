@@ -45,7 +45,7 @@ export const SEED_TIMEOUT_MS = 12000;
  *  was likely frozen (Windows Quick Edit, laptop sleep, debugger breakpoint). The
  *  lockstep should pause and re-sync from the senior peer.
  *
- *  Set high enough to avoid false positives from Trystero's relay error handling
+ *  Set high enough to avoid false positives from relay error handling
  *  (rate-limit retries, connection resets) which can stall the Node event loop
  *  for 1-3 seconds. A real user-initiated freeze (click on Windows terminal,
  *  laptop lid close) is typically 5+ seconds. */
@@ -57,17 +57,12 @@ export const FREEZE_THRESHOLD_MS = 5000;
  *  for everyone else. The peer re-syncs via STATE_REQUEST when they recover. */
 export const CONSECUTIVE_TIMEOUT_THRESHOLD = 3;
 
-/** If no peers are connected after this many ms, leave and rejoin the room to
- *  force Trystero to re-publish presence to the Nostr relays. Repeated every
- *  REJOIN_INTERVAL_MS until a peer connects. */
-export const REJOIN_INTERVAL_MS = 10_000;
-
-/** Trystero channel labels. */
+/** WebRTC data channel labels used by `NostrRoom` / `PeerConnection`. */
 export const CHANNEL_CTRL = 'ctrl' as const;
 export const CHANNEL_TICK = 'tick' as const;
 
-/** Default Nostr relay list. Used for both Trystero signaling (v0.1) and
- *  NostrPool persistence/signaling (v0.2). Each relay must accept WebSocket
+/** Default Nostr relay list. Used by NostrPool for all Nostr interactions
+ *  (persistence, signaling, presence). Each relay must accept WebSocket
  *  connections, accept custom event kinds, and not require paid signup. */
 export const DEFAULT_RELAYS: readonly string[] = [
   'wss://relay.primal.net',
@@ -76,3 +71,12 @@ export const DEFAULT_RELAYS: readonly string[] = [
   'wss://relay.nostr.net',
   'wss://nostr.fmt.wiz.biz',
 ];
+
+/** How often each peer re-announces itself via Nostr presence. */
+export const PRESENCE_PUBLISH_INTERVAL_MS = 3000;
+
+/** A peer is considered lost if no presence event is received for this long. */
+export const PRESENCE_TIMEOUT_MS = 15000;
+
+/** How often to scan for timed-out peers. */
+export const PRESENCE_SCAN_INTERVAL_MS = 5000;

@@ -256,18 +256,21 @@ At current scale (250×250 world), there is exactly 1 tile. All tile code runs b
 
 **Done when:** a player can quit, wait 5 minutes, rejoin, and see the decayed remnants of their previous session — reconstructed from Nostr, not local files.
 
-#### Stage 10: Proximity topology + dynamic lockstep
+#### Stage 10: Direct WebRTC signaling (Trystero replacement)
 
-The room-less architecture. Replace Trystero with direct Nostr signaling + proximity-based WebRTC connections.
+Replace Trystero with our own WebRTC transport over our own Nostr signaling. The semantics stay identical to Stage 9: every peer in the day's room (`grid:YYYY-MM-DD`) gets a direct WebRTC connection to every other peer; all peers are in lockstep together. Architecture remains topology-agnostic so proximity dynamics can land in a future stage when scale demands it.
 
-- Implement WebRTC SDP exchange via Nostr ephemeral events (replaces Trystero's signaling).
-- Implement proximity-based connection manager: players within ~30 cells form WebRTC lockstep connections; players who move apart disconnect. Connection budget: ~6 lockstep + ~10 gossip.
-- Implement gossip overlay: peers exchange position/direction over WebRTC data channels, forward known positions with TTL to gossip neighbors. Discovers peers beyond direct connections.
-- Refactor `NetClient` to manage a `Map<PlayerId, PeerConnection>` instead of a single `Room`.
-- Remove Trystero dependency. The `Room` interface becomes `PeerTransport` (single peer-to-peer connection with ctrl/tick channels).
-- Remove `trystero` from package.json.
+- Implement WebRTC SDP/ICE exchange via Nostr ephemeral events (kind 20079).
+- Implement single-peer WebRTC connection wrapper around `node-datachannel/polyfill` (W3C-compatible RTCPeerConnection).
+- Implement Nostr presence-based peer discovery (kind 20078) for the day's room, filtered via `['x', 'grid:${dayTag}']` tag.
+- Implement `NostrRoom` (replaces Trystero adapter): manages `Map<pubkey, PeerConnection>`, routes ctrl/tick messages, fires `onPeerJoin/Leave` callbacks. Same `Room` interface — zero changes to NetClient.
+- Initiator selection by lex compare of pubkeys (lower pubkey initiates).
+- Refactor `src/net/room.ts` to keep only the `Room` interface and `RoomFactory` type; delete the Trystero adapter.
+- Remove `trystero` from `package.json`.
 
-**Done when:** two players in separate terminals see each other via dynamic proximity connection, with no concept of "rooms."
+**Why proximity dynamics are deferred:** the original v0.2 plan bundled Stage 10 with dynamic proximity-based lockstep formation. Deeper analysis revealed five hard distributed-systems problems (state sync between independently-simulating peers, hash-check eviction during CRDT propagation lag, transitive vs. non-transitive lockstep groups, re-convergence after long separation, stale snapshot views). At v0.2 scale (≤10 players in 250×250 world) almost all players stay in lockstep range continuously, so the additional complexity buys nothing. The architecture remains fully prepared (Lockstep is topology-agnostic, `addPeer`/`removePeer` are dynamic) for proximity dynamics to land cleanly in Stage 12+ when player counts and world size justify the complexity.
+
+**Done when:** two players in separate terminals find each other via Nostr presence (no Trystero), connect directly via WebRTC with our own SDP/ICE signaling, and converge in lockstep. The `trystero` package is removed from `package.json`.
 
 #### Stage 11: Daemon bridge + forge
 
@@ -294,20 +297,20 @@ The living world's heartbeat. Independent of the networking refactor.
 
 ### v0.2 architecture summary
 
-Two layers replace rooms:
+Two layers, evolving in phases:
 
-1. **The cell layer** (CRDT, Nostr-propagated): cells are a Grow-Only Set with TTL. They merge without consensus. Propagation via signed Nostr events, sharded by spatial tile.
-2. **The interaction layer** (WebRTC, proximity-based): players within collision range form temporary lockstep connections. Dynamic, forms and dissolves as players move.
+1. **The cell layer** (CRDT, Nostr-propagated): cells are a Grow-Only Set with TTL. They merge without consensus. Propagation via signed Nostr events, sharded by spatial tile (Stage 9).
+2. **The interaction layer** (WebRTC over Nostr signaling): every connected peer is in one mesh in lockstep with the others (Stage 10). Stage 12+ adds proximity-based dynamic lockstep formation when scale requires it.
 
 Scaling is additive — each transition is a config change, not a rewrite:
 
-| Scale | World size | Tiles | Discovery | What changes |
-|-------|-----------|-------|-----------|-------------|
-| 10 | 250×250 | 1 | Nostr presence | Nothing |
-| 100 | 250×250 | 1 | Nostr presence | Nothing |
-| 1,000 | 632×316 | 6 | Nostr presence | World size config |
-| 10,000 | 2000×1000 | 32 | WebRTC gossip overlay | Add gossip module |
-| 100,000 | 6320×3160 | 325 | WebRTC gossip + relay federation | Relay map config |
+| Scale | World size | Tiles | Discovery | Lockstep model | What changes |
+|-------|-----------|-------|-----------|----------------|-------------|
+| 10 | 250×250 | 1 | Nostr presence | One mesh (Stage 10) | Nothing |
+| 100 | 250×250 | 1 | Nostr presence | One mesh (Stage 10) | Nothing |
+| 1,000 | 632×316 | 6 | Nostr presence | Proximity-based (Stage 12+) | World size config + proximity module |
+| 10,000 | 2000×1000 | 32 | WebRTC gossip overlay | Proximity-based | Add gossip module |
+| 100,000 | 6320×3160 | 325 | WebRTC gossip + relay federation | Proximity-based | Relay map config |
 
 ### v0.2 dependency changes
 

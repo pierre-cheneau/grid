@@ -54,6 +54,15 @@ export class NostrPool {
     }
   }
 
+  /** Fire-and-forget publish. Swallows all errors. Use for beacons (presence,
+   *  signaling, cadence snapshots) where a dropped event is recoverable on the
+   *  next cycle and the caller has no useful action on failure. */
+  publishFireAndForget(template: EventTemplate): void {
+    this.publish(template).catch((e) => {
+      dbg(`nostr: fire-and-forget publish threw: ${String(e)}`);
+    });
+  }
+
   /** Subscribe to events matching a filter. Returns a cleanup function. */
   subscribe(filter: Filter, onEvent: (event: NostrEvent) => void): () => void {
     dbg(`nostr: subscribe filter=${JSON.stringify(filter).slice(0, 100)}`);

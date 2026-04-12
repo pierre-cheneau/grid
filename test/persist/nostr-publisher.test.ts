@@ -29,6 +29,10 @@ class SpyNostrPool {
   async publish(template: EventTemplate): Promise<void> {
     this.published.push(template);
   }
+
+  publishFireAndForget(template: EventTemplate): void {
+    this.published.push(template);
+  }
 }
 
 describe('NostrPublisher', () => {

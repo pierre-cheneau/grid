@@ -11,6 +11,7 @@
 // This file lives outside `src/sim/` because it reads `process.env` and `os.hostname`
 // — both forbidden inside the simulation boundary.
 
+import { createHash } from 'node:crypto';
 import { hostname, userInfo } from 'node:os';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { fnv1a32 } from './hash.js';
@@ -63,16 +64,25 @@ export function deriveLocalId(now: () => number = Date.now): LocalIdentity {
   return { id, colorSeed, joinedAt, nostrSeckey: seckey, nostrPubkey: pubkey };
 }
 
-/** Append a suffix to an existing identity, re-deriving the colorSeed so that two
- *  terminals on the same machine with different `--name` flags get distinct colors
- *  and spawn positions. */
+/** Append a suffix to an existing identity. Two terminals on the same machine
+ *  with different `--name` flags get distinct colors, spawn positions, AND
+ *  distinct secp256k1 network identities — otherwise Stage 10's pubkey-based
+ *  peer discovery would collapse them into a single peer and they'd never see
+ *  each other's presence events. The rebased keypair is derived deterministically
+ *  from `sha256(base.seckey || suffix)` so re-running `--name a` preserves the
+ *  same network identity across restarts. */
 export function rebaseIdentity(base: LocalIdentity, suffix: string): LocalIdentity {
   const fullId = `${base.id}-${suffix}`;
+  const h = createHash('sha256');
+  h.update(base.nostrSeckey);
+  h.update(suffix, 'utf-8');
+  const seckey = new Uint8Array(h.digest());
+  const pubkey = getPublicKey(seckey);
   return {
     id: fullId,
     colorSeed: fnv1a32(fullId),
     joinedAt: base.joinedAt,
-    nostrSeckey: base.nostrSeckey,
-    nostrPubkey: base.nostrPubkey,
+    nostrSeckey: seckey,
+    nostrPubkey: pubkey,
   };
 }

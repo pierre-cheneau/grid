@@ -12,8 +12,8 @@ import type { LocalIdentity } from '../id/identity.js';
 import { TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
+import { createNostrRoom } from '../net/nostr-room.js';
 import { NostrPool } from '../net/nostr.js';
-import { createTrysteroRoom } from '../net/room.js';
 import { dayStartMs, seedFromDay, tickAtTime, todayTag } from '../net/time.js';
 import {
   NostrPublisher,
@@ -241,6 +241,10 @@ function setupShutdown(
       );
     }
 
+    // Stop the client (which leaves the room and tears down WebRTC connections)
+    // BEFORE closing the pool — otherwise in-flight signaling publishes from
+    // room.leave() would hit a closed relay pool.
+    await client.stop();
     pool.close();
 
     const stats = tracker.finalize(Date.now());
@@ -259,7 +263,6 @@ function setupShutdown(
         stdout.columns ?? 80,
       ),
     );
-    await client.stop();
     exit(0);
   };
 }
@@ -331,9 +334,11 @@ async function main(): Promise<void> {
       initialState,
     },
     {
-      roomFactory: (roomKey, peerId) =>
-        createTrysteroRoom(roomKey, peerId, {
-          relayUrls: gridCfg.relayUrls.length > 0 ? gridCfg.relayUrls : undefined,
+      roomFactory: async () =>
+        createNostrRoom({
+          pool,
+          dayTag,
+          localPubkey: id.nostrPubkey,
         }),
       clock: Date.now,
     },

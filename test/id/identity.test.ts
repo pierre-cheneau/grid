@@ -68,14 +68,41 @@ describe('deriveLocalId', () => {
 });
 
 describe('rebaseIdentity', () => {
-  it('preserves the Nostr keypair from the base identity', () => {
+  it('derives a distinct keypair from the base identity', () => {
     const base = deriveLocalId(() => 0);
     const rebased = rebaseIdentity(base, 'bot1');
-    assert.deepEqual(rebased.nostrSeckey, base.nostrSeckey);
-    assert.equal(rebased.nostrPubkey, base.nostrPubkey);
+    // Two terminals on the same machine with different --name flags must have
+    // different network identities, otherwise pubkey-based peer discovery
+    // would collapse them into one peer.
+    assert.notDeepEqual(rebased.nostrSeckey, base.nostrSeckey);
+    assert.notEqual(rebased.nostrPubkey, base.nostrPubkey);
+    assert.equal(rebased.nostrSeckey.length, 32);
+    assert.match(rebased.nostrPubkey, /^[0-9a-f]{64}$/);
   });
 
-  it('changes id and colorSeed but not keypair', () => {
+  it('rebased pubkey is derived from rebased seckey', () => {
+    const base = deriveLocalId(() => 0);
+    const rebased = rebaseIdentity(base, 'bot1');
+    assert.equal(rebased.nostrPubkey, getPublicKey(rebased.nostrSeckey));
+  });
+
+  it('is deterministic: same suffix on same base yields same rebased identity', () => {
+    const base = deriveLocalId(() => 0);
+    const r1 = rebaseIdentity(base, 'alt');
+    const r2 = rebaseIdentity(base, 'alt');
+    assert.deepEqual(r1.nostrSeckey, r2.nostrSeckey);
+    assert.equal(r1.nostrPubkey, r2.nostrPubkey);
+  });
+
+  it('different suffixes produce different keypairs', () => {
+    const base = deriveLocalId(() => 0);
+    const a = rebaseIdentity(base, 'a');
+    const b = rebaseIdentity(base, 'b');
+    assert.notDeepEqual(a.nostrSeckey, b.nostrSeckey);
+    assert.notEqual(a.nostrPubkey, b.nostrPubkey);
+  });
+
+  it('changes id and colorSeed, preserves joinedAt', () => {
     const base = deriveLocalId(() => 0);
     const rebased = rebaseIdentity(base, 'alt');
     assert.notEqual(rebased.id, base.id);

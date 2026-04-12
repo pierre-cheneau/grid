@@ -142,4 +142,4 @@ A quarterly review is recorded in this file with a one-line entry under "Audit h
 | Package | Version | Justification |
 |---|---|---|
 | `nostr-tools` | TBD | Nostr protocol: event creation, Schnorr signing/verification, relay pool management, subscription filters. Replaces Trystero's Nostr signaling AND adds persistence capabilities (cell snapshots, chain attestations, world config, presence). Brings `@noble/curves` transitively for secp256k1 Schnorr signatures (BIP-340). Canonical Nostr library, actively maintained, used by every Nostr client. Fallback: hand-roll Nostr event creation + WebSocket relay management (~500 LOC of security-critical protocol code). |
-| `node-datachannel` | `^0.32.2` | Retained from v0.1. WebRTC polyfill for Node. Used directly for `RTCPeerConnection` creation in the proximity-based topology (no longer passed through Trystero). |
+| `node-datachannel` | `^0.32.2` | Retained from v0.1. W3C-compatible WebRTC polyfill for Node. Used directly for `RTCPeerConnection` creation in `src/net/peer-connection.ts` (no longer passed through Trystero). |

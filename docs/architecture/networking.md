@@ -105,37 +105,40 @@ This cap is the load-bearing reason GRID's architecture works without a server. 
 
 The cap is not a limitation; it is the *property that makes the design work*.
 
-## Neighborhoods (v0.1) → Proximity topology (v0.2)
+## Neighborhoods (v0.1) → Direct WebRTC mesh (Stage 10) → Proximity topology (Stage 12+)
 
-### v0.1: Fixed neighborhoods
+### v0.1: Fixed neighborhoods (Trystero-managed)
 
-v0.1 uses a **neighborhood** model: a 6-peer fully-meshed cluster within today's grid. All peers in a neighborhood share the same lockstep simulation. Neighborhoods are isolated — cross-neighborhood interactions are limited to summary gossip.
+v0.1 uses a **neighborhood** model: a 6-peer fully-meshed cluster within today's grid. All peers in a neighborhood share the same lockstep simulation. Discovery and signaling go through Trystero's Nostr strategy.
 
-### v0.2: Room-less proximity topology
+### Stage 10: Direct WebRTC mesh (Trystero replacement)
 
-v0.2 eliminates neighborhoods entirely. Two independent systems replace them:
+Stage 10 replaces Trystero's transport without changing the lockstep semantics. Every peer in the day's room (`grid:YYYY-MM-DD`) gets a direct WebRTC connection to every other peer; all peers are in lockstep together. The differences from v0.1 are purely about WHO controls the transport:
 
-**1. Spatial tiles (cell state routing).** The world is divided into 256×256 fixed-size tiles. Each tile has its own Nostr topic for cell events. A player subscribes to the tiles that overlap their viewport plus adjacent tiles for prefetching. Cell state is a CRDT (Grow-Only Set with TTL) that merges without consensus. Tiles are for **cell routing**, not player grouping.
+- **Discovery**: Nostr presence events (kind 20078) tagged `['x', 'grid:${dayTag}']`. Subscribers filter via `#x`. Replaces Trystero's internal presence mechanism with one we control end-to-end.
+- **Signaling**: WebRTC SDP/ICE exchanged via Nostr ephemeral events (kind 20079) tagged `['p', targetPubkey]`. Initiator selection by lex compare of pubkeys (lower wins).
+- **Transport**: `RTCPeerConnection` from `node-datachannel/polyfill` (the W3C-compatible polyfill), used directly. Two data channels per peer: `ctrl` (reliable, ordered) and `tick` (unreliable, unordered).
+- **Mesh management**: a `NostrRoom` class implements the same `Room` interface NetClient already consumes. NetClient changes zero lines.
 
-**2. Proximity-based lockstep (player interaction).** Players within interaction range (~30 cells) form direct WebRTC connections and run lockstep for collision resolution. When they move apart, the connection dissolves. Each player can maintain up to ~6 lockstep + ~10 gossip connections. Players outside interaction range see each other's trails via the cell CRDT but do not need real-time input synchronization.
+The 6-peer cap from v0.1 still applies (WebRTC mesh bandwidth constraint). At v0.2 scale (~10 concurrent players in a 250×250 world) this is fine — the world is small enough that all players naturally cluster in one mesh.
 
-**Key insight:** most kills in GRID are from hitting trail cells, not head-on collisions. Trail cells are signed facts in the CRDT — no consensus needed. A player hitting a trail dies locally, deterministically, verifiably. Lockstep is only needed for the rare case of two nearby players colliding with each other simultaneously. This means the game works correctly even without lockstep — lockstep is a quality-of-experience upgrade for close encounters, not a correctness requirement.
+### Stage 12+: Proximity-based dynamic lockstep (deferred)
 
-### Peer discovery at scale
+The original v0.2 plan bundled Stage 10 with **dynamic proximity-based lockstep formation** — peers within ~30 cells would form lockstep, peers who moved apart would drop to a gossip-only mode. This is genuinely powerful for scaling beyond the 6-peer cap, but it has five hard distributed-systems problems:
 
-**At low density (< ~100 peers per tile):** Nostr ephemeral presence events. Each player publishes position every 3-5s to their tile's presence topic. All subscribers see nearby players.
+1. **State sync between independently-simulating peers**: when two peers form lockstep, whose state is canonical? Both have valid but slightly different states (cells, tick counter, RNG).
+2. **Hash-check eviction during CRDT propagation lag**: cell snapshots take seconds to propagate via Nostr; if two peers form lockstep before they've fully merged, hash check immediately evicts one of them.
+3. **Stale snapshot views**: when a senior peer sends STATE_RESPONSE to a re-joining peer, the snapshot contains the senior's view of the junior — which is stale. The junior must inject their actual current position.
+4. **Transitive vs. non-transitive lockstep groups**: A is in range of B, B is in range of C, but A is not in range of C. Are A, B, C all in one lockstep group? Or two overlapping pairs?
+5. **Re-convergence after long separation**: two peers walk far apart (run independently for minutes), then walk back together. State sync must reconcile minutes of independent simulation.
 
-**At high density (> ~100 per tile):** WebRTC gossip overlay. Once a player has any WebRTC connection, they gossip positions peer-to-peer. Each peer maintains a table of ~50 nearest players, discovering new peers through existing gossip neighbors. This is inspired by VON (Voronoi Overlay Network) spatial interest management.
+At v0.2 scale (≤10 players in a 250×250 world) almost all players stay in lockstep range continuously, so the additional complexity buys nothing. The architecture remains **fully prepared** for proximity dynamics:
+- `Lockstep` is topology-agnostic (`addPeer`/`removePeer` are dynamic).
+- `HashCheck` works with any peer subset.
+- `Room` interface already supports per-peer routing via session id.
+- `PresenceTracker` (Stage 10) is the foundation for position-based decisions.
 
-### Connection lifecycle
-
-1. Player joins, subscribes to tile presence topic on Nostr.
-2. Discovers nearby peers via presence events.
-3. Initiates WebRTC signaling via Nostr (SDP exchange as ephemeral events).
-4. Establishes data channel: gossip mode (position exchange every ~300ms).
-5. When a gossip peer enters lockstep range (~30 cells): upgrade to lockstep mode (per-tick input exchange).
-6. When a lockstep peer exits range: downgrade to gossip or disconnect.
-7. When a player moves to a new tile: subscribe to new tile presence, discover new neighbors.
+Stage 12+ adds proximity dynamics when player counts and world size justify the complexity.
 
 ## Time-anchored ticks
 
@@ -222,8 +225,10 @@ Approximate per-player budget at 10 ticks per second in a full 6-peer mesh:
 ## Implementation notes for v0.2
 
 - **Replace Trystero with `nostr-tools`** for all Nostr interactions (signaling, persistence, presence). `nostr-tools`'s `SimplePool` manages connections to multiple relays with reconnection and deduplication.
-- **WebRTC signaling via Nostr**: exchange SDP offers/answers as Nostr ephemeral events (kind 20079), tagged with the target peer's pubkey. ~100-150 LOC replacing Trystero's signaling.
-- **`node-datachannel`** remains the WebRTC polyfill. Used directly for `RTCPeerConnection` creation, no longer passed through Trystero.
+- **WebRTC signaling via Nostr**: exchange SDP offers/answers and ICE candidates as Nostr ephemeral events (kind 20079), tagged `['p', targetPubkey]`. Subscribers filter via `'#p': [myPubkey]`. Initiator selection by lex compare (lower pubkey wins).
+- **`node-datachannel/polyfill`** is used directly. Standard W3C `RTCPeerConnection` API (`createOffer`, `setLocalDescription`, `addIceCandidate`).
+- **Peer discovery**: Nostr presence events (kind 20078) tagged `['x', 'grid:${dayTag}']`. Each peer publishes own presence every 3s. Subscribers filter via `'#x': ['grid:${dayTag}']` to find all peers in today's room. Peer is considered lost after 15s without presence.
+- **Two data channels per peer**: `ctrl` (reliable, ordered) carries HELLO/EVICT/STATE_REQUEST/STATE_RESPONSE/KICKED/BYE; `tick` (unreliable, unordered) carries INPUT/STATE_HASH. Same channel labels and semantics as Trystero.
 - **Pinned Nostr relays for v0.2** (same list, passed to `nostr-tools` SimplePool):
   ```
   wss://relay.primal.net
@@ -232,6 +237,6 @@ Approximate per-player budget at 10 ticks per second in a full 6-peer mesh:
   wss://relay.nostr.net
   wss://nostr.fmt.wiz.biz
   ```
-- **Tile topics**: `grid:YYYY-MM-DD:t:X-Y:cells` for cell snapshots, `grid:YYYY-MM-DD:t:X-Y:presence` for ephemeral presence.
-- **Relay federation** (v0.2+): world config event includes optional relay map. Default: all tiles → same 5 relays. At scale: tile ranges → dedicated community-run relays.
-- **Connection budget per peer**: ~6 lockstep + ~10 gossip = ~16 WebRTC connections. At ~1KB/s each = ~16KB/s upload. Well within consumer bandwidth.
+- **Tile topics** (Stage 9): `grid:YYYY-MM-DD:t:X-Y` for cell snapshots (kind 30079) and chain attestations (kind 22770).
+- **Relay federation** (Stage 12+): world config event includes optional relay map. Default: all tiles → same 5 relays. At scale: tile ranges → dedicated community-run relays.
+- **Connection budget per peer (Stage 10)**: one WebRTC connection per peer in the day's room, all in lockstep. Same 6-peer cap as v0.1 due to mesh bandwidth constraints. Stage 12+ relaxes this with proximity-based dynamic mesh formation.

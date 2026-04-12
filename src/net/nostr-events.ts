@@ -83,7 +83,19 @@ export function buildChainAttestationEvent(
   };
 }
 
-/** Build a presence heartbeat event. */
+/** Build a room-level presence event (Stage 10 peer discovery).
+ *  Simpler than the tile-based presence event — just announces "I exist in this day's room."
+ *  Subscribers filter via `'#x': ['grid:${dayTag}']` to see all peers in the day. */
+export function buildRoomPresenceEvent(dayTag: string, now: number = Date.now()): EventTemplate {
+  return {
+    kind: NOSTR_KIND_PRESENCE,
+    tags: [['x', `grid:${dayTag}`]],
+    content: '',
+    created_at: unixSec(now),
+  };
+}
+
+/** Build a tile-based presence heartbeat event (Stage 12+ proximity). */
 export function buildPresenceEvent(
   dayTag: string,
   tileX: number,

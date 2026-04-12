@@ -31,6 +31,7 @@ export {
   buildPresenceEvent,
 } from './nostr-events.js';
 export type { Room, RoomFactory } from './room.js';
-export { createTrysteroRoom } from './room.js';
+export { NostrRoom, createNostrRoom } from './nostr-room.js';
+export type { NostrRoomConfig, PeerConnectionFactory } from './nostr-room.js';
 export { TICK_DURATION_MS, INPUT_TIMEOUT_MS, HASH_INTERVAL_TICKS, MAX_PEERS } from './constants.js';
 export { dayStartMs, seedFromDay, tickAtTime, todayTag } from './time.js';
