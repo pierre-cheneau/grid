@@ -1,30 +1,27 @@
-// NetClient — the public facade that wires room + lockstep + hashCheck + evict +
-// peer-registry + sync into a single object. Drives the lockstep loop in pull
-// mode via `runOnce(now)`; the CLI wraps that in a setInterval.
+// NetClient — the public facade for GRID's networking layer.
+//
+// Stage 14b: NetClient now holds exactly ONE TileMesh (the player's home tile)
+// and delegates all per-tile concerns (Room, Lockstep, PeerRegistry, HashCheck,
+// Eviction, fault tracking, chain hash) to it. NetClient retains the global,
+// cross-tile responsibilities: the listener fan-out (`on()` API), the daemon
+// bridge registry, and the top-level stop decision. Wire protocol and
+// determinism hash are unchanged from v0.2.
+//
+// Stage 17b will widen this to a set of TileMeshes (shadow-zone membership)
+// using the same TileMesh class. The facade's public surface is already
+// shaped for that future: listeners aggregate domain events regardless of
+// how many meshes are active.
+//
+// See `docs/architecture/networking.md` and `src/net/tile-mesh.ts`.
 
 import { DaemonBridge, type DaemonBridgeConfig, type DaemonBridgeDeps } from '../daemon/bridge.js';
 import { createSubprocessTransport } from '../daemon/subprocess-transport.js';
-import { GENESIS_HASH, computeChainHash } from '../persist/chain.js';
-import { type Config, type GridState, type PlayerId, type Turn, hashState } from '../sim/index.js';
-import { FREEZE_THRESHOLD_MS, MAX_PROTOCOL_FAULTS, SEED_TIMEOUT_MS } from './constants.js';
+import type { Config, GridState, PlayerId, Tick, Turn } from '../sim/index.js';
 import { dbg } from './debug.js';
-import { EvictionTracker } from './evict.js';
-import { HashCheck } from './hashCheck.js';
-import { Lockstep } from './lockstep.js';
-import type {
-  EvictMsg,
-  EvictReason,
-  InputMsg,
-  Message,
-  StateHashMsg,
-  StateRequestMsg,
-  StateResponseMsg,
-} from './messages.js';
-import { ProtocolError } from './messages.js';
-import { PeerRegistry } from './peer-registry.js';
-import { encodeMessage, parseMessage } from './protocol.js';
-import type { Room, RoomFactory } from './room.js';
-import { buildStateResponse, installSnapshot, pickResponder } from './sync.js';
+import type { EvictReason } from './messages.js';
+import type { RoomFactory } from './room.js';
+import type { TileId } from './tile-id.js';
+import { TileMesh, type TileMeshCallbacks } from './tile-mesh.js';
 
 export interface NetIdentity {
   readonly id: string;
@@ -36,6 +33,9 @@ export interface NetClientConfig {
   readonly roomKey: string;
   readonly identity: NetIdentity;
   readonly initialState: GridState;
+  /** The player's home tile. In Stage 14b the NetClient owns exactly one
+   *  TileMesh at this tile; Stage 17b will expand to shadow-zone membership. */
+  readonly homeTile: TileId;
 }
 
 export interface NetClientDeps {
@@ -44,24 +44,14 @@ export interface NetClientDeps {
 }
 
 type TickListener = (state: GridState) => void;
-type PeerListener = (peerId: string) => void;
-type EvictListener = (peerId: string, reason: EvictReason) => void;
+type PeerListener = (peerId: PlayerId) => void;
+type EvictListener = (peerId: PlayerId, reason: EvictReason) => void;
 
 export class NetClient {
-  private readonly localId: string;
-  private readonly lockstep: Lockstep;
-  private readonly hashCheck = new HashCheck();
-  private readonly evictTracker = new EvictionTracker();
-  private readonly registry: PeerRegistry;
-  private readonly faultCounts = new Map<string, number>();
-  private readonly pendingStateResponses = new Set<string>();
-  private room: Room | null = null;
+  private readonly localId: PlayerId;
+  private readonly mesh: TileMesh;
   private readonly daemonBridges = new Map<string, DaemonBridge>();
   private stopped = false;
-  private seedTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastRunOnceAt = 0;
-  private cachedHash = '';
-  private currentChainHash: Uint8Array = GENESIS_HASH;
 
   private readonly tickListeners: TickListener[] = [];
   private readonly joinListeners: PeerListener[] = [];
@@ -70,19 +60,34 @@ export class NetClient {
 
   constructor(
     private readonly cfg: NetClientConfig,
-    private readonly deps: NetClientDeps,
+    deps: NetClientDeps,
   ) {
     this.localId = cfg.identity.id;
-    this.registry = new PeerRegistry(this.localId, cfg.identity.joinedAt);
-    this.lockstep = new Lockstep({
-      localId: this.localId,
-      initialState: cfg.initialState,
-      clock: deps.clock,
-    });
+    const callbacks: TileMeshCallbacks = {
+      onTickAdvance: (state) => this.onTickAdvance(state),
+      onPeerJoin: (pid) => this.fire(this.joinListeners, pid),
+      onPeerLeave: (pid) => this.fire(this.leaveListeners, pid),
+      onEvict: (pid, reason) => this.fireEvict(pid, reason),
+      onKicked: () => {
+        void this.stop();
+      },
+    };
+    this.mesh = new TileMesh(
+      {
+        tile: cfg.homeTile,
+        roomKey: cfg.roomKey,
+        identity: cfg.identity,
+        initialState: cfg.initialState,
+      },
+      { roomFactory: deps.roomFactory, clock: deps.clock },
+      callbacks,
+    );
   }
 
+  // ---- Read-only accessors (all delegate to the home mesh) ----
+
   get currentState(): GridState {
-    return this.lockstep.currentState;
+    return this.mesh.currentState;
   }
 
   get config(): Config {
@@ -90,20 +95,22 @@ export class NetClient {
   }
 
   get isPaused(): boolean {
-    return this.lockstep.isPaused;
+    return this.mesh.isPaused;
   }
 
   get stateHash(): string {
-    return this.cachedHash;
+    return this.mesh.stateHash;
   }
 
   get chainHash(): Uint8Array {
-    return this.currentChainHash;
+    return this.mesh.chainHash;
   }
 
   get peers(): ReadonlySet<PlayerId> {
-    return this.lockstep.expectedPeers;
+    return this.mesh.peers;
   }
+
+  // ---- Event subscription ----
 
   on(event: 'tick', cb: TickListener): void;
   on(event: 'peerJoin', cb: PeerListener): void;
@@ -116,41 +123,11 @@ export class NetClient {
     else if (event === 'evict') this.evictListeners.push(cb as EvictListener);
   }
 
-  async start(): Promise<void> {
-    dbg(`client[${this.localId}]: start`);
-    this.room = await this.deps.roomFactory(this.cfg.roomKey, this.localId);
-    this.room.onCtrl((raw, sid) => this.onMessage(raw, sid));
-    this.room.onTick((raw, sid) => this.onMessage(raw, sid));
-    this.room.onPeerLeave((sid) => this.onTransportLeave(sid));
-    this.room.onPeerJoin(() => this.broadcastHello());
-    this.broadcastHello();
-    dbg(`client[${this.localId}]: HELLO broadcast`);
-    this.seedTimer = setTimeout(() => {
-      if (this.lockstep.isPaused) {
-        dbg(`client[${this.localId}]: seed timeout — no peers, unpausing`);
-        this.lockstep.unpause();
-      }
-    }, SEED_TIMEOUT_MS);
-  }
+  // ---- Lifecycle ----
 
-  /** Reset the simulation for a new day. Clears all transient state from the
-   *  previous day while keeping the room connection intact — peers reset
-   *  independently at their own midnight detection. */
-  resetForNewDay(state: GridState): void {
-    this.lockstep.reset(state);
-    this.hashCheck.clear();
-    this.evictTracker.clear();
-    this.faultCounts.clear();
-    this.pendingStateResponses.clear();
-    this.currentChainHash = GENESIS_HASH;
-    this.cachedHash = '';
-    for (const bridge of this.daemonBridges.values()) {
-      if (bridge.isRunning) {
-        this.lockstep.addPeer(bridge.daemonId);
-        this.lockstep.queueJoin({ id: bridge.daemonId, colorSeed: bridge.colorSeed });
-      }
-    }
-    dbg(`client[${this.localId}]: reset for new day at tick ${state.tick}`);
+  async start(): Promise<void> {
+    dbg(`client[${this.localId}]: start (homeTile=${this.cfg.homeTile.x},${this.cfg.homeTile.y})`);
+    await this.mesh.start();
   }
 
   async stop(): Promise<void> {
@@ -158,351 +135,82 @@ export class NetClient {
     this.stopped = true;
     for (const bridge of this.daemonBridges.values()) bridge.stop();
     this.daemonBridges.clear();
-    if (this.seedTimer !== null) clearTimeout(this.seedTimer);
-    if (this.room) {
-      this.room.sendCtrl(encodeMessage({ v: 1, t: 'BYE', from: this.localId }));
-      await this.room.leave();
-    }
+    await this.mesh.stop();
   }
 
+  /** Reset the simulation for a new day. Clears all transient state in the
+   *  home mesh while keeping its room connection intact — peers reset
+   *  independently at their own midnight detection. Running daemons are
+   *  re-registered as peers of the fresh day. */
+  resetForNewDay(state: GridState): void {
+    this.mesh.reset(state);
+    for (const bridge of this.daemonBridges.values()) {
+      if (bridge.isRunning) {
+        this.mesh.addPeer(bridge.daemonId);
+        this.mesh.queueJoin({ id: bridge.daemonId, colorSeed: bridge.colorSeed });
+      }
+    }
+    dbg(`client[${this.localId}]: reset for new day at tick ${state.tick}`);
+  }
+
+  // ---- Input ----
+
   setLocalInput(turn: Turn): void {
-    this.lockstep.setLocalInput(turn);
-    this.broadcastLocalInput();
+    this.mesh.setLocalInput(turn);
   }
 
   /** Deploy a daemon alongside the pilot. The daemon becomes a second local
-   *  player whose inputs are injected into lockstep and broadcast to peers. */
+   *  player whose inputs are injected into the home-tile lockstep and
+   *  broadcast to peers in that tile. */
   async deployDaemon(config: DaemonBridgeConfig): Promise<{ sourceBytes: number }> {
-    // Stop existing daemon with the same ID if any.
+    if (this.stopped) throw new Error('cannot deploy daemon after NetClient.stop()');
     const existing = this.daemonBridges.get(config.daemonId);
     if (existing) {
       existing.stop();
       this.daemonBridges.delete(config.daemonId);
     }
     const deps: DaemonBridgeDeps = {
-      broadcastInput: (id, tick, turn) => {
-        if (this.room !== null && !this.stopped) {
-          this.room.sendTick(encodeMessage({ v: 1, t: 'INPUT', from: id, tick, i: turn }));
-        }
-      },
-      addPeer: (id) => this.lockstep.addPeer(id),
-      removePeer: (id) => this.lockstep.removePeer(id),
-      queueJoin: (req) => this.lockstep.queueJoin(req),
-      recordInput: (msg) => this.lockstep.recordRemoteInput(msg),
+      broadcastInput: (id, tick, turn) => this.broadcastDaemonInput(id, tick, turn),
+      addPeer: (id) => this.mesh.addPeer(id),
+      removePeer: (id) => this.mesh.removePeer(id),
+      queueJoin: (req) => this.mesh.queueJoin(req),
+      recordInput: (msg) => this.mesh.recordRemoteInput(msg),
       createTransport: (path) => createSubprocessTransport(path),
     };
     const bridge = new DaemonBridge(config, deps);
     await bridge.start();
     this.daemonBridges.set(config.daemonId, bridge);
-    this.broadcastDaemonHello(config);
+    this.mesh.broadcastDaemonHello(config);
     dbg(`client[${this.localId}]: daemon ${config.daemonId} deployed`);
     return { sourceBytes: bridge.sourceBytes };
   }
 
   runOnce(now: number): GridState | null {
-    if (this.stopped || this.room === null) return null;
-    // Freeze detection.
-    if (this.lastRunOnceAt > 0 && now - this.lastRunOnceAt > FREEZE_THRESHOLD_MS) {
-      if (!this.lockstep.isPaused && this.registry.size > 0) {
-        dbg(`client[${this.localId}]: freeze detected (gap=${now - this.lastRunOnceAt}ms)`);
-        this.lockstep.pause();
-        const senior = this.pickSeniorPeer();
-        if (senior !== null) this.sendStateRequest(senior);
-      }
-    }
-    this.lastRunOnceAt = now;
-    this.broadcastLocalInput();
-    const result = this.lockstep.advanceIfReady(now);
-    if (result === null) return null;
-    const newState = result.state;
-    this.cachedHash = hashState(newState);
-    if (result.turnsSummary) {
-      dbg(
-        `lockstep[${this.localId}]: advance tick=${result.tick} ${result.turnsSummary} → hash=${this.cachedHash}`,
-      );
-    }
-    this.drainPendingStateResponses();
+    if (this.stopped) return null;
+    return this.mesh.runOnce(now);
+  }
+
+  // ---- Internal ----
+
+  private onTickAdvance(state: GridState): void {
+    // Daemon bridges first: each daemon's CMD for the next tick is produced
+    // in response to this TICK, so the sooner they see it the better.
     for (const bridge of this.daemonBridges.values()) {
-      if (bridge.isRunning) bridge.onTick(newState);
+      if (bridge.isRunning) bridge.onTick(state);
     }
-    for (const cb of this.tickListeners) cb(newState);
-    if (HashCheck.isCadenceTick(newState.tick)) {
-      this.room.sendTick(
-        encodeMessage({
-          v: 1,
-          t: 'STATE_HASH',
-          from: this.localId,
-          tick: newState.tick,
-          h: this.cachedHash,
-        }),
-      );
-      this.hashCheck.recordOwn(newState.tick, this.cachedHash, this.localId);
-      this.currentChainHash = computeChainHash(
-        this.currentChainHash,
-        this.cachedHash,
-        newState.tick,
-      );
-    }
-    return newState;
+    for (const cb of this.tickListeners) cb(state);
   }
 
-  // ---- Internal: message routing ----
-
-  private onMessage(raw: string, sessionId: string): void {
-    let msg: Message;
-    try {
-      msg = parseMessage(raw);
-    } catch (e) {
-      if (e instanceof ProtocolError) {
-        this.recordFault(sessionId, e.message);
-        return;
-      }
-      throw e;
-    }
-    if (msg.t === 'HELLO') {
-      this.handleHello(msg, sessionId);
-      return;
-    }
-    const expected = this.registry.playerFor(sessionId);
-    if (expected === undefined) {
-      this.recordFault(sessionId, `${msg.t} from unknown session`);
-      return;
-    }
-    if (msg.from !== expected) {
-      this.recordFault(sessionId, `from "${msg.from}" ≠ registered "${expected}"`);
-      return;
-    }
-    this.faultCounts.set(sessionId, 0);
-    this.dispatch(msg);
+  private broadcastDaemonInput(id: PlayerId, tick: Tick, turn: Turn): void {
+    if (this.stopped) return;
+    this.mesh.broadcastInput(id, tick, turn);
   }
 
-  private dispatch(msg: Message): void {
-    dbg(`client[${this.localId}]: dispatch ${msg.t} from ${msg.from}`);
-    switch (msg.t) {
-      case 'INPUT':
-        this.handleInput(msg);
-        break;
-      case 'STATE_HASH':
-        this.handleStateHash(msg);
-        break;
-      case 'EVICT':
-        this.handleEvict(msg);
-        break;
-      case 'STATE_REQUEST':
-        this.handleStateRequest(msg);
-        break;
-      case 'STATE_RESPONSE':
-        this.handleStateResponse(msg);
-        break;
-      case 'KICKED':
-        void this.stop();
-        break;
-      case 'BYE':
-        this.onTransportLeave(msg.from);
-        break;
-    }
+  private fire(listeners: PeerListener[], pid: PlayerId): void {
+    for (const cb of listeners) cb(pid);
   }
 
-  // ---- Internal: handlers ----
-
-  private handleHello(msg: import('./messages.js').HelloMsg, sessionId: string): void {
-    // Reject ghost peers: a stale Nostr presence from a previous session of
-    // ourselves. The ghost has the same player id but a different session id.
-    if (msg.from === this.localId) {
-      dbg(`client[${this.localId}]: ignoring HELLO from self (ghost peer session=${sessionId})`);
-      return;
-    }
-    const result = this.registry.registerHello(msg, sessionId);
-    this.faultCounts.set(sessionId, 0);
-    if (result.kind === 'spoof') {
-      this.recordFault(sessionId, result.reason);
-      return;
-    }
-    if (result.kind === 'known') return;
-    this.lockstep.addPeer(msg.from);
-    this.broadcastHello();
-    if (result.isSenior) {
-      dbg(`client[${this.localId}]: ${msg.from} is senior; sending STATE_REQUEST`);
-      this.sendStateRequest(msg.from);
-    } else {
-      dbg(`client[${this.localId}]: ${msg.from} is junior; queueing join + response`);
-      this.lockstep.unpause();
-      if (this.seedTimer !== null) {
-        clearTimeout(this.seedTimer);
-        this.seedTimer = null;
-      }
-      this.lockstep.queueJoin({ id: msg.from, colorSeed: msg.color_seed });
-      this.pendingStateResponses.add(msg.from);
-    }
-    for (const cb of this.joinListeners) cb(msg.from);
-  }
-
-  private handleInput(msg: InputMsg): void {
-    const result = this.lockstep.recordRemoteInput(msg);
-    if (result === 'stale' && this.lockstep.isAutoDefaulted(msg.from)) {
-      if (!this.pendingStateResponses.has(msg.from)) {
-        dbg(`client[${this.localId}]: stale INPUT from ${msg.from}; queueing STATE_RESPONSE`);
-        this.pendingStateResponses.add(msg.from);
-      }
-    }
-  }
-
-  private handleStateHash(msg: StateHashMsg): void {
-    this.hashCheck.recordRemote(msg);
-    const desync = this.hashCheck.classify(msg.tick);
-    if (desync === null) return;
-    if (desync.minority.includes(this.localId)) {
-      dbg(`client[${this.localId}]: desync at tick ${msg.tick} — re-syncing`);
-      this.lockstep.pause();
-      this.sendStateRequest(msg.from);
-    } else {
-      for (const target of desync.minority) this.castEvict(target, 'hash_mismatch', msg.tick);
-    }
-  }
-
-  private handleEvict(msg: EvictMsg): void {
-    const decision = this.evictTracker.record(msg, this.registry.size + 1);
-    if (decision === null) return;
-    if (decision.target === this.localId) {
-      void this.stop();
-      return;
-    }
-    this.registry.removeByPlayer(decision.target);
-    this.lockstep.removePeer(decision.target);
-    for (const cb of this.evictListeners) cb(decision.target, decision.reason);
-  }
-
-  private handleStateRequest(msg: StateRequestMsg): void {
-    if (!this.registry.peers.has(msg.from)) return;
-    this.pendingStateResponses.add(msg.from);
-    dbg(`client[${this.localId}]: queued STATE_RESPONSE for ${msg.from}`);
-  }
-
-  private handleStateResponse(msg: StateResponseMsg): void {
-    if (msg.to !== this.localId) return;
-    if (msg.from === this.localId) {
-      dbg(`client[${this.localId}]: ignoring STATE_RESPONSE from self (ghost peer)`);
-      return;
-    }
-    const { state } = installSnapshot(msg);
-    // Reject snapshots with incompatible grid dimensions — they're from a
-    // different game session that reused the same room name.
-    const local = this.cfg.initialState.config;
-    if (state.config.width !== local.width || state.config.height !== local.height) {
-      dbg(
-        `client[${this.localId}]: rejecting snapshot from ${msg.from} — grid ${state.config.width}x${state.config.height} ≠ local ${local.width}x${local.height}`,
-      );
-      return;
-    }
-    dbg(`client[${this.localId}]: installing snapshot from ${msg.from} at tick ${state.tick}`);
-    this.lockstep.reset(state);
-    for (const pid of state.players.keys()) {
-      if (pid !== this.localId) this.lockstep.addPeer(pid);
-    }
-  }
-
-  // ---- Internal: helpers ----
-
-  private broadcastDaemonHello(config: DaemonBridgeConfig): void {
-    if (this.room === null) return;
-    this.room.sendCtrl(
-      encodeMessage({
-        v: 1,
-        t: 'HELLO',
-        from: config.daemonId,
-        color: [
-          config.colorSeed & 0xff,
-          (config.colorSeed >> 8) & 0xff,
-          (config.colorSeed >> 16) & 0xff,
-        ],
-        color_seed: config.colorSeed,
-        kind: 'daemon',
-        client: 'grid/0.2.0',
-        joined_at: Math.floor(Date.now() / 1000),
-      }),
-    );
-  }
-
-  private broadcastLocalInput(): void {
-    if (this.room === null || this.stopped) return;
-    const tick = this.lockstep.currentTick + 1;
-    this.room.sendTick(
-      encodeMessage({ v: 1, t: 'INPUT', from: this.localId, tick, i: this.lockstep.localTurn }),
-    );
-  }
-
-  private broadcastHello(): void {
-    if (this.room === null) return;
-    const id = this.cfg.identity;
-    this.room.sendCtrl(
-      encodeMessage({
-        v: 1,
-        t: 'HELLO',
-        from: this.localId,
-        color: [id.colorSeed & 0xff, (id.colorSeed >> 8) & 0xff, (id.colorSeed >> 16) & 0xff],
-        color_seed: id.colorSeed,
-        kind: 'pilot',
-        client: 'grid/0.1.0',
-        joined_at: id.joinedAt,
-      }),
-    );
-  }
-
-  private sendStateRequest(toPlayerId: string): void {
-    if (this.room === null) return;
-    const sid = this.registry.sessionFor(toPlayerId);
-    if (sid === undefined) return;
-    this.room.sendCtrl(encodeMessage({ v: 1, t: 'STATE_REQUEST', from: this.localId }), sid);
-  }
-
-  private drainPendingStateResponses(): void {
-    if (this.room === null || this.pendingStateResponses.size === 0) return;
-    for (const pid of [...this.pendingStateResponses]) {
-      const sid = this.registry.sessionFor(pid);
-      if (sid === undefined) continue;
-      const resp = buildStateResponse(this.localId, pid, this.lockstep.currentState);
-      this.room.sendCtrl(encodeMessage(resp), sid);
-      dbg(
-        `client[${this.localId}]: sent STATE_RESPONSE to ${pid} at tick ${this.lockstep.currentTick}`,
-      );
-    }
-    this.pendingStateResponses.clear();
-  }
-
-  private onTransportLeave(sessionId: string): void {
-    const pid = this.registry.removeBySession(sessionId);
-    if (pid !== undefined) {
-      this.lockstep.removePeer(pid);
-      this.evictTracker.forget(pid);
-      this.pendingStateResponses.delete(pid);
-      for (const cb of this.leaveListeners) cb(pid);
-    }
-  }
-
-  private recordFault(sessionId: string, reason: string): void {
-    const n = (this.faultCounts.get(sessionId) ?? 0) + 1;
-    this.faultCounts.set(sessionId, n);
-    dbg(`client[${this.localId}]: fault from ${sessionId} (${n}): ${reason}`);
-    if (n === MAX_PROTOCOL_FAULTS) {
-      const pid = this.registry.playerFor(sessionId);
-      if (pid !== undefined) this.castEvict(pid, 'disconnect', this.lockstep.currentTick);
-    }
-  }
-
-  private castEvict(target: string, reason: EvictReason, tick: number): void {
-    if (this.room === null) return;
-    const msg: EvictMsg = { v: 1, t: 'EVICT', from: this.localId, target, reason, tick };
-    this.room.sendCtrl(encodeMessage(msg));
-    this.handleEvict(msg);
-  }
-
-  private pickSeniorPeer(): string | null {
-    const candidates = [...this.registry.peers.values()].map((p) => ({
-      id: p.id,
-      joinedAt: p.joinedAt,
-    }));
-    if (candidates.length === 0) return null;
-    const winner = pickResponder(candidates, this.localId, this.cfg.identity.joinedAt);
-    return winner === this.localId ? (candidates[0]?.id ?? null) : winner;
+  private fireEvict(pid: PlayerId, reason: EvictReason): void {
+    for (const cb of this.evictListeners) cb(pid, reason);
   }
 }

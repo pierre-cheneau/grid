@@ -367,6 +367,7 @@ async function main(): Promise<void> {
       roomKey: gridCfg.room,
       identity: id,
       initialState,
+      homeTile,
     },
     {
       roomFactory: async () =>

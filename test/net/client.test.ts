@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import type { DaemonBridgeConfig } from '../../src/daemon/bridge.js';
 import { NetClient } from '../../src/net/client.js';
 import {
   type Config,
@@ -65,6 +66,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 0xa11ce, joinedAt: 1000 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clockA.now },
     );
@@ -73,6 +75,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 0xb0b, joinedAt: 1001 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clockB.now },
     );
@@ -112,6 +115,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -120,6 +124,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 2, joinedAt: 1001 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -206,6 +211,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 0xa11ce, joinedAt: 1000 },
         initialState: aliceOnly(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -214,6 +220,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 0xb0b, joinedAt: 1001 },
         initialState: bobOnly(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -270,6 +277,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -278,6 +286,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 2, joinedAt: 1001 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -328,6 +337,7 @@ describe('NetClient integration via MockRoom', () => {
         roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
       },
       { roomFactory: factory, clock: () => clock.now },
     );
@@ -347,5 +357,32 @@ describe('NetClient integration via MockRoom', () => {
 
     await a.stop();
     await rogueRoom.leave();
+  });
+
+  it('deployDaemon after stop throws rather than leaking a subprocess', async () => {
+    const net = new MockRoomNetwork();
+    const factory = net.factory();
+    const clock = new FakeClock();
+    const a = new NetClient(
+      {
+        roomKey: 'grid:test',
+        identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
+        initialState: initialState(),
+        homeTile: { x: 0, y: 0 },
+      },
+      { roomFactory: factory, clock: () => clock.now },
+    );
+    await a.start();
+    await a.stop();
+    const config: DaemonBridgeConfig = {
+      scriptPath: '/nonexistent.cjs',
+      daemonId: 'bot.test@alice.host',
+      colorSeed: 0x123456,
+      gridWidth: cfg.width,
+      gridHeight: cfg.height,
+    };
+    // If the guard were absent, this would spawn a subprocess via
+    // createSubprocessTransport before we got a chance to observe it.
+    await assert.rejects(a.deployDaemon(config), /cannot deploy daemon after/);
   });
 });
