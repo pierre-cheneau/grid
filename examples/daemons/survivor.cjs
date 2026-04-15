@@ -36,7 +36,10 @@ rl.on('line', (line) => {
   if (!hs) {
     send({ t: 'HELLO_ACK', v: 1, name: 'survivor', author: 'grid', version: '0.1' });
     hs = true;
-    if (m.config) { gw = m.config.grid_w || 250; gh = m.config.grid_h || 250; }
+    if (m.config) {
+      gw = m.config.grid_w || 250;
+      gh = m.config.grid_h || 250;
+    }
     return;
   }
   if (m.t !== 'TICK' || !m.you.alive) {
@@ -81,10 +84,13 @@ rl.on('line', (line) => {
     // Bonus: prefer directions toward nearest opponent (hunting)
     let huntBonus = 0;
     if (m.others.length > 0 && space > 30) {
-      const nearest = m.others.reduce((b, o) => {
-        const d = Math.abs(o.x - me.x) + Math.abs(o.y - me.y);
-        return d < b.d ? { o, d } : b;
-      }, { o: m.others[0], d: Infinity });
+      const nearest = m.others.reduce(
+        (b, o) => {
+          const d = Math.abs(o.x - me.x) + Math.abs(o.y - me.y);
+          return d < b.d ? { o, d } : b;
+        },
+        { o: m.others[0], d: Number.POSITIVE_INFINITY },
+      );
       const distNow = Math.abs(nearest.o.x - me.x) + Math.abs(nearest.o.y - me.y);
       const distAfter = Math.abs(nearest.o.x - nx) + Math.abs(nearest.o.y - ny);
       if (distAfter < distNow) huntBonus = 5;

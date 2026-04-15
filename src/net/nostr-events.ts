@@ -47,6 +47,14 @@ export function buildWorldConfigEvent(
   return { kind: NOSTR_KIND_WORLD_CONFIG, tags, content: '', created_at: unixSec(now) };
 }
 
+/** Canonical `d`-tag value for a tile's cell snapshot stream. Used by both the
+ *  publisher (`buildCellSnapshotEvent`) and any subscriber filtering by tile.
+ *  Keep this function as the ONLY place that constructs the snapshot tag string
+ *  — otherwise publisher/subscriber formats can silently drift. */
+export function cellSnapshotTopic(dayTag: string, tileX: number, tileY: number): string {
+  return `grid:${dayTag}:t:${tileX}-${tileY}`;
+}
+
 /** Build a cell snapshot event for a tile. */
 export function buildCellSnapshotEvent(
   dayTag: string,
@@ -59,7 +67,7 @@ export function buildCellSnapshotEvent(
   return {
     kind: NOSTR_KIND_CELL_SNAPSHOT,
     tags: [
-      ['d', `grid:${dayTag}:t:${tileX}-${tileY}`],
+      ['d', cellSnapshotTopic(dayTag, tileX, tileY)],
       ['tick', String(tick)],
     ],
     content: Buffer.from(compressedCells).toString('base64'),
@@ -90,13 +98,31 @@ export function buildChainAttestationEvent(
   };
 }
 
+/** Compute the canonical Nostr topic string for the day's room or a tile within it.
+ *  Used by both publishers and subscribers — always call this rather than constructing
+ *  the topic inline, so publish and subscribe formats can never drift apart.
+ *
+ *  - `dayRoomTopic('2026-04-15')` → `'grid:2026-04-15'` (legacy day-level, v0.2)
+ *  - `dayRoomTopic('2026-04-15', { x: 0, y: 0 })` → `'grid:2026-04-15:t:0-0'` (Stage 13+) */
+export function dayRoomTopic(
+  dayTag: string,
+  tile?: { readonly x: number; readonly y: number },
+): string {
+  if (tile === undefined) return `grid:${dayTag}`;
+  return `grid:${dayTag}:t:${tile.x}-${tile.y}`;
+}
+
 /** Build a room-level presence event (Stage 10 peer discovery).
- *  Simpler than the tile-based presence event — just announces "I exist in this day's room."
- *  Subscribers filter via `'#x': ['grid:${dayTag}']` to see all peers in the day. */
-export function buildRoomPresenceEvent(dayTag: string, now: number = Date.now()): EventTemplate {
+ *  Announces "I exist in this day's room" — or, with `tile` provided, "I exist in this tile."
+ *  Subscribers filter via `'#x': [dayRoomTopic(dayTag, tile)]`. */
+export function buildRoomPresenceEvent(
+  dayTag: string,
+  now: number = Date.now(),
+  tile?: { readonly x: number; readonly y: number },
+): EventTemplate {
   return {
     kind: NOSTR_KIND_PRESENCE,
-    tags: [['x', `grid:${dayTag}`]],
+    tags: [['x', dayRoomTopic(dayTag, tile)]],
     content: '',
     created_at: unixSec(now),
   };

@@ -10,13 +10,18 @@ import {
   PRESENCE_TIMEOUT_MS,
 } from './constants.js';
 import { dbg } from './debug.js';
-import { NOSTR_KIND_PRESENCE, buildRoomPresenceEvent } from './nostr-events.js';
+import { NOSTR_KIND_PRESENCE, buildRoomPresenceEvent, dayRoomTopic } from './nostr-events.js';
 import type { NostrEvent, NostrPool } from './nostr.js';
+import type { TileId } from './tile-id.js';
 
 export interface PresenceTrackerDeps {
   readonly pool: NostrPool;
   readonly dayTag: string;
   readonly localPubkey: string;
+  /** Optional tile scoping (Stage 13+). When provided, presence is scoped to the
+   *  tile's room (`grid:DAY:t:X-Y`) instead of the day's global room (`grid:DAY`).
+   *  Peers in different tiles do not see each other. */
+  readonly homeTile?: TileId;
   readonly onPeerSeen: (pubkey: string) => void;
   readonly onPeerLost: (pubkey: string) => void;
   /** Injectable for tests. Defaults to `Date.now`. */
@@ -30,6 +35,8 @@ export interface PresenceTrackerDeps {
 export class PresenceTracker {
   private readonly pool: NostrPool;
   private readonly dayTag: string;
+  private readonly homeTile: TileId | undefined;
+  private readonly topic: string;
   private readonly localPubkey: string;
   private readonly onPeerSeen: (pubkey: string) => void;
   private readonly onPeerLost: (pubkey: string) => void;
@@ -46,6 +53,8 @@ export class PresenceTracker {
   constructor(deps: PresenceTrackerDeps) {
     this.pool = deps.pool;
     this.dayTag = deps.dayTag;
+    this.homeTile = deps.homeTile;
+    this.topic = dayRoomTopic(this.dayTag, this.homeTile);
     this.localPubkey = deps.localPubkey;
     this.onPeerSeen = deps.onPeerSeen;
     this.onPeerLost = deps.onPeerLost;
@@ -57,12 +66,12 @@ export class PresenceTracker {
   start(): void {
     if (this.running) return;
     this.running = true;
-    dbg(`presence: starting for ${this.dayTag}`);
+    dbg(`presence: starting for ${this.topic}`);
 
     this.subCleanup = this.pool.subscribe(
       {
         kinds: [NOSTR_KIND_PRESENCE],
-        '#x': [`grid:${this.dayTag}`],
+        '#x': [this.topic],
         since: Math.floor(this.now() / 1000),
       },
       (event) => this.handleEvent(event),
@@ -100,7 +109,7 @@ export class PresenceTracker {
   // ---- internal ----
 
   private publishOwn(): void {
-    this.pool.publishFireAndForget(buildRoomPresenceEvent(this.dayTag, this.now()));
+    this.pool.publishFireAndForget(buildRoomPresenceEvent(this.dayTag, this.now(), this.homeTile));
   }
 
   private handleEvent(event: NostrEvent): void {

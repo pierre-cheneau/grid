@@ -22,6 +22,7 @@ import type { NostrEvent, NostrPool } from './nostr.js';
 import { PeerConnection, type PeerConnectionDeps } from './peer-connection.js';
 import { PresenceTracker } from './presence-tracker.js';
 import type { Room } from './room.js';
+import type { TileId } from './tile-id.js';
 
 type Listener<T extends unknown[]> = (...args: T) => void;
 
@@ -31,6 +32,9 @@ export interface NostrRoomConfig {
   readonly pool: NostrPool;
   readonly dayTag: string;
   readonly localPubkey: string;
+  /** Optional tile scoping (Stage 13+). When provided, peer discovery is restricted
+   *  to other peers in the same tile. Without it, behavior matches v0.2 (day-level). */
+  readonly homeTile?: TileId;
   /** Optional PeerConnection factory for tests. Defaults to `new PeerConnection(deps)`. */
   readonly peerConnectionFactory?: PeerConnectionFactory;
 }
@@ -61,6 +65,7 @@ export class NostrRoom implements Room {
       localPubkey: this.localPubkey,
       onPeerSeen: (pk) => this.handlePeerSeen(pk),
       onPeerLost: (pk) => this.handlePeerLost(pk),
+      ...(config.homeTile !== undefined ? { homeTile: config.homeTile } : {}),
     });
     this.start();
   }

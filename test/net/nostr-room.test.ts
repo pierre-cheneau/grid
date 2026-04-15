@@ -97,6 +97,13 @@ class MockNostrPool {
       sub.handler(event);
     }
   }
+
+  /** Test-only accessor: return the filter for the first subscription of a
+   *  given kind. Used by tests verifying that NostrRoom forwards configuration
+   *  to its internal PresenceTracker / signaling subscription. */
+  filterForKind(kind: number): Filter | undefined {
+    return this.subs.find((s) => s.filter.kinds?.includes(kind))?.filter;
+  }
 }
 
 // Track every harness so afterEach can tear them down.
@@ -106,7 +113,7 @@ const activeHarnesses: Array<{ room: NostrRoom }> = [];
  *  PresenceTracker internally; we drive it by emitting presence events
  *  through the mock pool's subscription channel. Each harness is tracked
  *  for afterEach cleanup so real setInterval timers don't leak. */
-function buildRoomHarnessAuto(localPubkey: string) {
+function buildRoomHarnessAuto(localPubkey: string, opts?: { homeTile?: { x: number; y: number } }) {
   const pool = new MockNostrPool();
   const peers: FakePeer[] = [];
   const room = new NostrRoom({
@@ -118,6 +125,7 @@ function buildRoomHarnessAuto(localPubkey: string) {
       peers.push(fake);
       return fake as unknown as PeerConnection;
     },
+    ...(opts?.homeTile !== undefined ? { homeTile: opts.homeTile } : {}),
   });
   const h = { room, pool, peers };
   activeHarnesses.push(h);
@@ -419,6 +427,40 @@ describe('NostrRoom', () => {
     emitPresence(h.pool, 'ffffeeee', '2026-04-11');
     await h.room.leave();
     assert.doesNotThrow(() => h.room.leave());
+  });
+
+  // ---- Stage 13: homeTile forwarding to PresenceTracker ----
+
+  it('without homeTile: presence subscription uses day-level topic (legacy)', () => {
+    const h = buildRoomHarnessAuto('00001111');
+    const presenceFilter = h.pool.filterForKind(20078);
+    assert.ok(presenceFilter, 'expected a presence subscription');
+    const xTags = (presenceFilter as Record<string, unknown>)['#x'] as string[];
+    assert.deepEqual(xTags, ['grid:2026-04-11']);
+  });
+
+  it('with homeTile: presence subscription is tile-scoped', () => {
+    const h = buildRoomHarnessAuto('00001111', { homeTile: { x: 3, y: 7 } });
+    const presenceFilter = h.pool.filterForKind(20078);
+    assert.ok(presenceFilter, 'expected a presence subscription');
+    const xTags = (presenceFilter as Record<string, unknown>)['#x'] as string[];
+    assert.deepEqual(xTags, ['grid:2026-04-11:t:3-7']);
+  });
+
+  it('with homeTile: published presence uses tile-scoped topic', () => {
+    const h = buildRoomHarnessAuto('00001111', { homeTile: { x: 0, y: 0 } });
+    // PresenceTracker publishes on start; the first published event should carry the tile-scoped x tag.
+    const xTag = h.pool.published[0]?.tags.find((t) => t[0] === 'x')?.[1];
+    assert.equal(xTag, 'grid:2026-04-11:t:0-0');
+  });
+
+  it('with homeTile (negative coords): subscription + publish match', () => {
+    const h = buildRoomHarnessAuto('00001111', { homeTile: { x: -1, y: -1 } });
+    const presenceFilter = h.pool.filterForKind(20078);
+    const subXTags = (presenceFilter as Record<string, unknown>)['#x'] as string[];
+    const pubXTag = h.pool.published[0]?.tags.find((t) => t[0] === 'x')?.[1];
+    assert.equal(subXTags[0], 'grid:2026-04-11:t:-1--1');
+    assert.equal(pubXTag, 'grid:2026-04-11:t:-1--1');
   });
 });
 

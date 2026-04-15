@@ -11,7 +11,10 @@ import {
   buildCellSnapshotEvent,
   buildChainAttestationEvent,
   buildPresenceEvent,
+  buildRoomPresenceEvent,
   buildWorldConfigEvent,
+  cellSnapshotTopic,
+  dayRoomTopic,
 } from '../../src/net/nostr-events.js';
 
 function findTag(tags: string[][], name: string): string | undefined {
@@ -95,14 +98,96 @@ describe('buildPresenceEvent', () => {
   });
 });
 
-describe('buildPresenceEvent', () => {
-  it('produces correct kind and position tags', () => {
-    const evt = buildPresenceEvent('2026-04-09', 3, 7, 890, 1820, 1, 'corne@thinkpad');
+describe('cellSnapshotTopic', () => {
+  it('produces canonical d-tag value for a tile', () => {
+    assert.equal(cellSnapshotTopic('2026-04-15', 3, 7), 'grid:2026-04-15:t:3-7');
+    assert.equal(cellSnapshotTopic('2026-04-15', 0, 0), 'grid:2026-04-15:t:0-0');
+  });
+
+  it('buildCellSnapshotEvent uses the same canonical topic', () => {
+    const evt = buildCellSnapshotEvent('2026-04-15', 3, 7, 1000, new Uint8Array(0));
+    assert.equal(findTag(evt.tags, 'd'), cellSnapshotTopic('2026-04-15', 3, 7));
+  });
+
+  it('handles negative tile coordinates', () => {
+    assert.equal(cellSnapshotTopic('2026-04-15', -1, -1), 'grid:2026-04-15:t:-1--1');
+    assert.equal(cellSnapshotTopic('2026-04-15', -10, 5), 'grid:2026-04-15:t:-10-5');
+  });
+
+  it('handles large tile coordinates', () => {
+    assert.equal(cellSnapshotTopic('2026-04-15', 1000, 2000), 'grid:2026-04-15:t:1000-2000');
+  });
+
+  it('distinct tiles produce distinct topics (unique invariant)', () => {
+    const topics = new Set([
+      cellSnapshotTopic('2026-04-15', -1, -1),
+      cellSnapshotTopic('2026-04-15', -1, 1),
+      cellSnapshotTopic('2026-04-15', 1, -1),
+      cellSnapshotTopic('2026-04-15', 1, 1),
+      cellSnapshotTopic('2026-04-15', -10, -5),
+      cellSnapshotTopic('2026-04-15', -5, -10),
+    ]);
+    assert.equal(topics.size, 6);
+  });
+});
+
+describe('dayRoomTopic', () => {
+  it('returns legacy day-level topic when tile is undefined', () => {
+    assert.equal(dayRoomTopic('2026-04-15'), 'grid:2026-04-15');
+  });
+
+  it('returns tile-scoped topic when tile is provided', () => {
+    assert.equal(dayRoomTopic('2026-04-15', { x: 0, y: 0 }), 'grid:2026-04-15:t:0-0');
+    assert.equal(dayRoomTopic('2026-04-15', { x: 5, y: 12 }), 'grid:2026-04-15:t:5-12');
+  });
+
+  it('distinguishes adjacent tiles', () => {
+    const a = dayRoomTopic('2026-04-15', { x: 0, y: 0 });
+    const b = dayRoomTopic('2026-04-15', { x: 1, y: 0 });
+    const c = dayRoomTopic('2026-04-15', { x: 0, y: 1 });
+    assert.notEqual(a, b);
+    assert.notEqual(a, c);
+    assert.notEqual(b, c);
+  });
+
+  it('handles negative tile coordinates', () => {
+    assert.equal(dayRoomTopic('2026-04-15', { x: -1, y: -1 }), 'grid:2026-04-15:t:-1--1');
+  });
+});
+
+describe('buildRoomPresenceEvent with tile', () => {
+  it('without tile produces legacy day-level x tag', () => {
+    const evt = buildRoomPresenceEvent('2026-04-15');
     assert.equal(evt.kind, NOSTR_KIND_PRESENCE);
-    assert.equal(findTag(evt.tags, 'd'), 'grid:2026-04-09:p:3-7');
-    assert.equal(findTag(evt.tags, 'pos'), '890,1820');
-    assert.equal(findTag(evt.tags, 'dir'), '1');
-    assert.equal(findTag(evt.tags, 'pid'), 'corne@thinkpad');
+    assert.equal(findTag(evt.tags, 'x'), 'grid:2026-04-15');
+  });
+
+  it('with tile produces tile-scoped x tag', () => {
+    const evt = buildRoomPresenceEvent('2026-04-15', Date.now(), { x: 3, y: 7 });
+    assert.equal(findTag(evt.tags, 'x'), 'grid:2026-04-15:t:3-7');
+  });
+
+  it('publish and subscribe topics match for the same tile', () => {
+    // The critical invariant: both sides agree on the canonical topic string.
+    const tile = { x: 2, y: 5 };
+    const evt = buildRoomPresenceEvent('2026-04-15', Date.now(), tile);
+    const subscriptionTopic = dayRoomTopic('2026-04-15', tile);
+    assert.equal(findTag(evt.tags, 'x'), subscriptionTopic);
+  });
+
+  it('produces correct kind when tile is provided', () => {
+    const evt = buildRoomPresenceEvent('2026-04-15', Date.now(), { x: 0, y: 0 });
+    assert.equal(evt.kind, NOSTR_KIND_PRESENCE);
+  });
+
+  it('handles negative tile coordinates', () => {
+    const evt = buildRoomPresenceEvent('2026-04-15', Date.now(), { x: -1, y: -1 });
+    assert.equal(findTag(evt.tags, 'x'), 'grid:2026-04-15:t:-1--1');
+  });
+
+  it('now=0 produces created_at=0 (not fallback to current time)', () => {
+    const evt = buildRoomPresenceEvent('2026-04-15', 0, { x: 0, y: 0 });
+    assert.equal(evt.created_at, 0);
   });
 });
 

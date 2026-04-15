@@ -16,6 +16,7 @@ import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
 import { createNostrRoom } from '../net/nostr-room.js';
 import { NostrPool } from '../net/nostr.js';
+import { tileOfPos } from '../net/tile-id.js';
 import { dayStartMs, seedFromDay, tickAtTime, todayTag } from '../net/time.js';
 import {
   NostrPublisher,
@@ -355,6 +356,12 @@ async function main(): Promise<void> {
   const cells = await loadColdStartCells(pool, dayTag, gameConfig, currentTick, cfg.debug);
   const initialState = makeInitialState(gridCfg, id.id, id.colorSeed, currentTick, cells);
 
+  // Stage 13: each NetClient is scoped to a single tile (its home tile).
+  // For now, the initial spawn position determines the home tile. With a
+  // single-tile world (current default 250×250 with TILE_SIZE 256), every
+  // player starts in tile (0, 0) — behavior identical to v0.2.
+  const homeTile = tileOfPos(initialState.players.get(id.id)?.pos ?? { x: 0, y: 0 });
+
   const client = new NetClient(
     {
       roomKey: gridCfg.room,
@@ -367,6 +374,7 @@ async function main(): Promise<void> {
           pool,
           dayTag,
           localPubkey: id.nostrPubkey,
+          homeTile,
         }),
       clock: Date.now,
     },

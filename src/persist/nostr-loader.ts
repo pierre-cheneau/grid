@@ -6,7 +6,7 @@
 // expiry. The result is a cell map ready to inject into the initial state.
 
 import { dbg } from '../net/debug.js';
-import { NOSTR_KIND_CELL_SNAPSHOT } from '../net/nostr-events.js';
+import { NOSTR_KIND_CELL_SNAPSHOT, cellSnapshotTopic } from '../net/nostr-events.js';
 import type { NostrPool } from '../net/nostr.js';
 import type { Cell, Config, Tick } from '../sim/types.js';
 import { decodeSnapshot, decompressSnapshot, filterExpiredCells } from './snapshot.js';
@@ -33,7 +33,7 @@ export async function loadNostrSnapshot(
     pool
       .fetch({
         kinds: [NOSTR_KIND_CELL_SNAPSHOT],
-        '#d': [`grid:${dayTag}:t:${tileX}-${tileY}`],
+        '#d': [cellSnapshotTopic(dayTag, tileX, tileY)],
         limit: 5,
       })
       .catch(() => []),
