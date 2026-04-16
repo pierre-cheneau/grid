@@ -332,9 +332,16 @@ export class TileMesh {
       case 'KICKED':
         this.cb.onKicked();
         break;
-      case 'BYE':
-        this.onTransportLeave(msg.from);
+      case 'BYE': {
+        // BYE carries the peer's player id (wire-protocol namespace), but
+        // onTransportLeave is keyed by transport session id. Resolve the
+        // session via the registry so the peer is actually removed. If the
+        // transport-leave event follows shortly after (normal case), it
+        // finds no registered session and becomes a no-op — no double-fire.
+        const sid = this.registry.sessionFor(msg.from);
+        if (sid !== undefined) this.onTransportLeave(sid);
         break;
+      }
     }
   }
 

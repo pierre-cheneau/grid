@@ -316,10 +316,7 @@ describe('TileMesh callback contract', () => {
     await a.stop();
   });
 
-  it('a peer that stops its transport fires onPeerLeave (realistic peer-exit path)', async () => {
-    // BYE's ctrl-dispatch is a best-effort soft notice; the authoritative peer
-    // removal flows from the transport's leave listener. This regression test
-    // pins the transport path since it is the one production relies on.
+  it('transport-leave fires onPeerLeave and removes the peer from the mesh', async () => {
     const net = new MockRoomNetwork();
     const spy = makeSpy();
     const mesh = makeMesh(net, 'alice@host', 0xa1, 1000, () => 0, spy);
@@ -329,6 +326,50 @@ describe('TileMesh callback contract', () => {
     assert.deepEqual(spy.joins, ['bob@host']);
     await peer.room.leave();
     assert.deepEqual(spy.leaves, ['bob@host']);
+    assert.equal(mesh.peers.has('bob@host'), false);
+    await mesh.stop();
+  });
+
+  it('BYE ctrl-dispatch fires onPeerLeave and removes the peer', async () => {
+    const net = new MockRoomNetwork();
+    const spy = makeSpy();
+    const mesh = makeMesh(net, 'alice@host', 0xa1, 1000, () => 0, spy);
+    await mesh.start();
+    const peer = attachPeer(net, 'bob@host');
+    peer.sendCtrl(peerHelloMsg('bob@host', 1001));
+    assert.deepEqual(spy.joins, ['bob@host']);
+    peer.sendCtrl({ v: 1, t: 'BYE', from: 'bob@host' });
+    assert.deepEqual(spy.leaves, ['bob@host']);
+    assert.equal(mesh.peers.has('bob@host'), false);
+    await mesh.stop();
+  });
+
+  it('BYE followed by transport-leave fires onPeerLeave exactly once (no double fire)', async () => {
+    const net = new MockRoomNetwork();
+    const spy = makeSpy();
+    const mesh = makeMesh(net, 'alice@host', 0xa1, 1000, () => 0, spy);
+    await mesh.start();
+    const peer = attachPeer(net, 'bob@host');
+    peer.sendCtrl(peerHelloMsg('bob@host', 1001));
+    peer.sendCtrl({ v: 1, t: 'BYE', from: 'bob@host' });
+    await peer.room.leave();
+    assert.deepEqual(spy.leaves, ['bob@host'], 'onPeerLeave fired once, not twice');
+    await mesh.stop();
+  });
+
+  it('BYE for an unknown player is a safe no-op (no crash, no spurious leave)', async () => {
+    const net = new MockRoomNetwork();
+    const spy = makeSpy();
+    const mesh = makeMesh(net, 'alice@host', 0xa1, 1000, () => 0, spy);
+    await mesh.start();
+    const peer = attachPeer(net, 'bob@host');
+    peer.sendCtrl(peerHelloMsg('bob@host', 1001));
+    // BYE for a peer we've never heard of. The from-vs-session check rejects
+    // it upstream (fault counted, not dispatched), but even if it reached
+    // dispatch the sessionFor lookup returns undefined and nothing happens.
+    peer.sendCtrl({ v: 1, t: 'BYE', from: 'phantom@nowhere' });
+    assert.equal(spy.leaves.length, 0, 'no spurious onPeerLeave');
+    assert.equal(mesh.peers.has('bob@host'), true, 'real peer unaffected');
     await mesh.stop();
   });
 
