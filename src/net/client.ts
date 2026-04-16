@@ -76,7 +76,7 @@ type EvictListener = (peerId: PlayerId, reason: EvictReason) => void;
  *
  * Multi-tile orchestration (Stage 15+):
  *   • queries:   `hasTile`, `activeTiles`
- *   • mutators:  `addTile`, `removeTile`
+ *   • mutators:  `addTile`, `removeTile`, `updateShadowSet` (Stage 16)
  */
 export class NetClient {
   private readonly localId: PlayerId;
@@ -84,6 +84,10 @@ export class NetClient {
   private readonly homeTileKey: string;
   private readonly daemonBridges = new Map<string, DaemonBridge>();
   private stopped = false;
+  /** Serializes `updateShadowSet` calls so a fresh one never races with
+   *  an in-flight one. Initialized to a resolved promise. The chain tail
+   *  absorbs rejections so a failed call doesn't poison later calls. */
+  private shadowUpdateChain: Promise<void> = Promise.resolve();
 
   private readonly tickListeners: TickListener[] = [];
   private readonly joinListeners: PeerListener[] = [];
@@ -154,6 +158,46 @@ export class NetClient {
       this.meshes.delete(key);
       throw err;
     }
+  }
+
+  /** Reconcile the active tile set with `desiredTiles`: attach any tile in
+   *  `desiredTiles` that's not already active, detach any non-home tile
+   *  currently active that's not in `desiredTiles`.
+   *
+   *  Stage 16 design note — Model B (home-fixed): the home tile is ALWAYS
+   *  preserved, even if `desiredTiles` omits it. That gives Stage 16 a
+   *  clean, additive semantic: the home mesh is the anchor, shadow
+   *  neighbors rotate around it as the player moves. Stage 17 will revise
+   *  this to migrate the home tile when the player's primary tile changes;
+   *  this doc comment should move to a history note at that point.
+   *
+   *  Concurrency: calls are serialized via an internal Promise chain so a
+   *  fresh call never races with an in-flight one. A rejection in the
+   *  chain does NOT poison subsequent calls — the error is still raised
+   *  to the caller that triggered it.
+   *
+   *  No-op after `stop()`.
+   *
+   *  Typical usage (Stage 16 CLI driver):
+   *  ```ts
+   *  const desired = shadowTilesOf(playerPos, SHADOW_ZONE_WIDTH);
+   *  void client.updateShadowSet(desired);
+   *  ```
+   */
+  updateShadowSet(desiredTiles: readonly TileId[]): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const task = this.shadowUpdateChain.then(() => this.applyShadowSet(desiredTiles));
+    // Attach a handler to `task` that swallows rejections. This keeps the
+    // chain alive after a failure (subsequent calls aren't poisoned) AND
+    // marks the rejection as handled for Node's unhandled-rejection
+    // detector — fire-and-forget callers (`void client.updateShadowSet(…)`)
+    // don't need their own .catch. The original `task` still rejects to
+    // direct awaiters. The dbg() log is the only trace a failure leaves —
+    // without it, a relay outage would be invisible in the CLI.
+    this.shadowUpdateChain = task.catch((err: unknown) => {
+      dbg(`client[${this.localId}]: updateShadowSet rejected: ${String(err)}`);
+    });
+    return task;
   }
 
   /** Stop and remove the TileMesh at `tile`. Idempotent: a no-op if no
@@ -272,6 +316,43 @@ export class NetClient {
     const mesh = this.meshes.get(this.homeTileKey);
     if (mesh === undefined) throw new Error('invariant: home mesh missing');
     return mesh;
+  }
+
+  /** Internal worker for `updateShadowSet`. Always runs serialized through
+   *  `shadowUpdateChain`; do not call directly. */
+  private async applyShadowSet(desiredTiles: readonly TileId[]): Promise<void> {
+    // Re-check stopped under the serialization lock: a stop() may have
+    // completed while this task was queued.
+    if (this.stopped) return;
+    const desiredKeys = new Set(desiredTiles.map(tileKeyOf));
+
+    // Collect the diff on both sides BEFORE awaiting any I/O, so
+    // concurrent mutations to `this.meshes` can't corrupt the plan.
+    const toAdd: TileId[] = [];
+    for (const tile of desiredTiles) {
+      if (!this.meshes.has(tileKeyOf(tile))) toAdd.push(tile);
+    }
+    const toRemove: TileId[] = [];
+    for (const [key, mesh] of this.meshes) {
+      // Model B invariant: home is always preserved, even when absent
+      // from `desiredTiles`. Stage 17 will revise.
+      if (key === this.homeTileKey) continue;
+      if (!desiredKeys.has(key)) toRemove.push(mesh.tile);
+    }
+
+    // Detach first to free room resources, then attach. Both are
+    // sequenced per-side so we don't fan out a burst of concurrent
+    // Nostr subscriptions / tear-downs. A `stopped` check between
+    // iterations makes concurrent `stop()` a graceful early-exit
+    // instead of letting `addTile` throw via its own guard.
+    for (const tile of toRemove) {
+      if (this.stopped) return;
+      await this.removeTile(tile);
+    }
+    for (const tile of toAdd) {
+      if (this.stopped) return;
+      await this.addTile(tile);
+    }
   }
 
   private createMesh(tile: TileId, initialState: GridState): TileMesh {

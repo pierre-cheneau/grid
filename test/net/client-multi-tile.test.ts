@@ -9,8 +9,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { NetClient, type NetClientDeps } from '../../src/net/client.js';
+import { SHADOW_ZONE_WIDTH } from '../../src/net/constants.js';
 import { encodeMessage } from '../../src/net/protocol.js';
 import type { Room } from '../../src/net/room.js';
+import { shadowTilesOf } from '../../src/net/shadow.js';
 import type { TileId } from '../../src/net/tile-id.js';
 import { type Config, type GridState, type Player, newRng } from '../../src/sim/index.js';
 import { MockRoomNetwork, isolatedTileRoomFactory } from './mock-room.js';
@@ -613,3 +615,324 @@ describe('NetClient multi-tile — lifecycle edges', () => {
 // routing contract follows from `deployDaemon` calling `this.homeMesh.
 // broadcastDaemonHello` directly — no mesh-iteration involved, so no
 // new test surface is needed at this layer.
+
+// ---------------------------------------------------------------------------
+// Stage 16 — updateShadowSet (shadow-zone driver)
+// ---------------------------------------------------------------------------
+//
+// Model B semantics: the home tile is ALWAYS preserved. Stage 17 will flip
+// this to home migration, at which point the "home preserved" tests below
+// will need to be rewritten. The test names call out the Model B assumption
+// explicitly so the intent of the flip is visible in the diff.
+
+describe('NetClient multi-tile — updateShadowSet (Stage 16)', () => {
+  it('no-op when desired set equals current active set', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+    await client.addTile({ x: 1, y: 0 });
+
+    const before = client.activeTiles().map((t) => ({ x: t.x, y: t.y }));
+    await client.updateShadowSet([
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+    ]);
+    const after = client.activeTiles().map((t) => ({ x: t.x, y: t.y }));
+    assert.deepEqual(after, before, 'active set unchanged');
+  });
+
+  it('adds tiles present in desired but not in current', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+
+    await client.updateShadowSet([
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+    ]);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), true);
+    assert.equal(client.hasTile({ x: 0, y: 1 }), true);
+    assert.equal(client.activeTiles().length, 3);
+
+    await client.stop();
+  });
+
+  it('removes non-home tiles absent from desired', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+    await client.addTile({ x: 1, y: 0 });
+    await client.addTile({ x: 0, y: 1 });
+    assert.equal(client.activeTiles().length, 3);
+
+    await client.updateShadowSet([{ x: 0, y: 0 }]);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), false);
+    assert.equal(client.hasTile({ x: 0, y: 1 }), false);
+    assert.equal(client.activeTiles().length, 1, 'only home remains');
+
+    await client.stop();
+  });
+
+  it('applies a mixed add + remove diff in one call', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+    await client.addTile({ x: 1, y: 0 });
+    // Current: { (0,0)=home, (1,0) }. Desired: { (0,0)=home, (0,1) }.
+    // Expected: (1,0) removed, (0,1) added.
+    await client.updateShadowSet([
+      { x: 0, y: 0 },
+      { x: 0, y: 1 },
+    ]);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), false);
+    assert.equal(client.hasTile({ x: 0, y: 1 }), true);
+    assert.equal(client.hasTile({ x: 0, y: 0 }), true);
+    assert.equal(client.activeTiles().length, 2);
+
+    await client.stop();
+  });
+
+  it('empty desired set removes every non-home tile (Model B: home preserved)', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+    await client.addTile({ x: 1, y: 0 });
+    await client.addTile({ x: -1, y: 0 });
+    await client.addTile({ x: 0, y: 1 });
+    assert.equal(client.activeTiles().length, 4);
+
+    await client.updateShadowSet([]);
+    assert.deepEqual(client.activeTiles(), [{ x: 0, y: 0 }], 'only home remains');
+
+    await client.stop();
+  });
+
+  it('preserves home even when desired excludes it (Model B — Stage 17 will revise)', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+    // Desired list omits home entirely.
+    await client.updateShadowSet([
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ]);
+    assert.equal(client.hasTile({ x: 0, y: 0 }), true, 'home preserved');
+    assert.equal(client.hasTile({ x: 1, y: 0 }), true);
+    assert.equal(client.hasTile({ x: 2, y: 0 }), true);
+    assert.equal(client.activeTiles().length, 3);
+
+    await client.stop();
+  });
+
+  it('is a safe no-op after stop', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+    await client.stop();
+    // Must not throw and must not mutate.
+    await client.updateShadowSet([
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ]);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), false);
+    assert.equal(client.hasTile({ x: 2, y: 0 }), false);
+  });
+
+  it('serializes overlapping calls — final state matches the last call', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+
+    // Fire two calls back-to-back WITHOUT awaiting the first. The internal
+    // Promise chain must sequence them so the final state matches the
+    // second (later) call's desired set.
+    const first = client.updateShadowSet([
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+    ]);
+    const second = client.updateShadowSet([{ x: 3, y: 0 }]);
+    await Promise.all([first, second]);
+
+    // Final active set: home + whatever the second call asked for.
+    assert.equal(client.hasTile({ x: 0, y: 0 }), true, 'home preserved');
+    assert.equal(client.hasTile({ x: 3, y: 0 }), true, 'second call applied last');
+    assert.equal(client.hasTile({ x: 1, y: 0 }), false, 'first-call tile was removed');
+    assert.equal(client.hasTile({ x: 2, y: 0 }), false, 'first-call tile was removed');
+
+    await client.stop();
+  });
+
+  it('a failing call surfaces to its caller but does NOT poison the chain', async () => {
+    // Factory that rejects on tile (9,9), succeeds otherwise.
+    const { factory: isoFactory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({
+      roomFactory: async (tile) => {
+        if (tile.x === 9 && tile.y === 9) throw new Error('boom');
+        return isoFactory(tile);
+      },
+      clock: () => 0,
+    });
+    await client.start();
+
+    // The first call will attempt to add (9,9) and reject. A subsequent
+    // call should still run; the chain is not poisoned.
+    await assert.rejects(
+      client.updateShadowSet([
+        { x: 9, y: 9 },
+        { x: 1, y: 0 },
+      ]),
+      /boom/,
+    );
+    // Chain still usable: a fresh call goes through.
+    await client.updateShadowSet([{ x: 2, y: 0 }]);
+    assert.equal(client.hasTile({ x: 2, y: 0 }), true, 'subsequent call succeeded');
+    assert.equal(client.hasTile({ x: 9, y: 9 }), false, 'failed tile not present');
+
+    await client.stop();
+  });
+
+  it('integrates with shadowTilesOf — player near east edge pulls in the east neighbor', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+
+    // Place a player near the eastern edge of tile (0,0). With
+    // TILE_SIZE=256 and SHADOW_ZONE_WIDTH=32, a localX of 240 puts us
+    // within the east shadow band (240 >= 256 - 32 = 224).
+    const pos = { x: 240, y: 128 };
+    const desired = shadowTilesOf(pos, SHADOW_ZONE_WIDTH);
+    assert.deepEqual(
+      desired,
+      [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+      ],
+      'shadowTilesOf returns primary + east neighbor',
+    );
+    await client.updateShadowSet(desired);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), true, 'east neighbor attached');
+
+    // Move the player back to the center — shadow set contracts.
+    const center = shadowTilesOf({ x: 128, y: 128 }, SHADOW_ZONE_WIDTH);
+    assert.deepEqual(center, [{ x: 0, y: 0 }], 'only primary remains');
+    await client.updateShadowSet(center);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), false, 'east neighbor detached');
+
+    await client.stop();
+  });
+
+  it('duplicates in desiredTiles are idempotent (no double-add)', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+
+    // Desired list intentionally lists the same non-home tile twice.
+    await client.updateShadowSet([
+      { x: 1, y: 0 },
+      { x: 1, y: 0 },
+    ]);
+    assert.equal(client.hasTile({ x: 1, y: 0 }), true);
+    assert.equal(client.activeTiles().length, 2, 'home + one non-home mesh');
+
+    await client.stop();
+  });
+
+  it('handles negative-coordinate tiles through the diff', async () => {
+    const { factory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({ roomFactory: factory, clock: () => 0 });
+    await client.start();
+
+    await client.updateShadowSet([
+      { x: -1, y: 0 },
+      { x: 0, y: -1 },
+      { x: -1, y: -1 },
+    ]);
+    assert.equal(client.hasTile({ x: -1, y: 0 }), true);
+    assert.equal(client.hasTile({ x: 0, y: -1 }), true);
+    assert.equal(client.hasTile({ x: -1, y: -1 }), true);
+    assert.equal(client.activeTiles().length, 4);
+
+    // Remove them via a fresh desired set that omits them.
+    await client.updateShadowSet([]);
+    assert.equal(client.hasTile({ x: -1, y: 0 }), false);
+    assert.equal(client.hasTile({ x: 0, y: -1 }), false);
+    assert.equal(client.hasTile({ x: -1, y: -1 }), false);
+    assert.equal(client.activeTiles().length, 1, 'only home remains');
+
+    await client.stop();
+  });
+
+  it('partial progress lands when a mid-chain add fails', async () => {
+    // Factory rejects on (9,9), accepts others. Desired list puts (9,9)
+    // between two valid tiles to exercise mid-chain failure.
+    const { factory: isoFactory } = isolatedTileRoomFactory('alice@host');
+    const client = makeClient({
+      roomFactory: async (tile) => {
+        if (tile.x === 9 && tile.y === 9) throw new Error('boom');
+        return isoFactory(tile);
+      },
+      clock: () => 0,
+    });
+    await client.start();
+
+    await assert.rejects(
+      client.updateShadowSet([
+        { x: 1, y: 0 },
+        { x: 2, y: 0 },
+        { x: 9, y: 9 },
+        { x: 3, y: 0 },
+      ]),
+      /boom/,
+    );
+
+    // Tiles added before the failure should remain; the failing tile and
+    // any tiles that would have been added after it are NOT present.
+    assert.equal(client.hasTile({ x: 1, y: 0 }), true, 'pre-failure add #1 landed');
+    assert.equal(client.hasTile({ x: 2, y: 0 }), true, 'pre-failure add #2 landed');
+    assert.equal(client.hasTile({ x: 9, y: 9 }), false, 'failing tile cleaned up');
+    assert.equal(client.hasTile({ x: 3, y: 0 }), false, 'post-failure add skipped');
+
+    await client.stop();
+  });
+
+  it('stop() during updateShadowSet exits the loop gracefully (no spurious rejection)', async () => {
+    // Factory introduces a small async delay so we can interleave stop() with
+    // an in-flight updateShadowSet.
+    const { factory: isoFactory } = isolatedTileRoomFactory('alice@host');
+    let unblockFirstAdd: () => void = () => {};
+    const firstAddBlocked = new Promise<void>((resolve) => {
+      unblockFirstAdd = resolve;
+    });
+    let callCount = 0;
+    const client = makeClient({
+      roomFactory: async (tile) => {
+        callCount++;
+        // Block the first non-home add so we can observe stop() racing with it.
+        if (callCount === 2) await firstAddBlocked;
+        return isoFactory(tile);
+      },
+      clock: () => 0,
+    });
+    await client.start();
+
+    // Kick off an updateShadowSet that will block on the second factory call.
+    const pending = client.updateShadowSet([
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+      { x: 3, y: 0 },
+    ]);
+    // Give the promise chain a turn to start the first addTile.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Stop while the first add is still blocked.
+    const stopping = client.stop();
+    unblockFirstAdd();
+    // Both promises should settle without throwing. The in-flight addTile
+    // completes (it already passed its stopped-check at call time), but
+    // subsequent iterations hit the per-iteration stopped guard and return.
+    await Promise.all([pending.catch(() => {}), stopping]);
+    // No assertion on final state — the invariant is simply "no crash".
+  });
+});

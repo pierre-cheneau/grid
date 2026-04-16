@@ -80,3 +80,13 @@ export const PRESENCE_TIMEOUT_MS = 15000;
 
 /** How often to scan for timed-out peers. */
 export const PRESENCE_SCAN_INTERVAL_MS = 5000;
+
+/** Stage 16: shadow-zone depth in cells. When the player is within this
+ *  distance of a tile border, the adjacent tile becomes a shadow mesh —
+ *  peers there are visible to us and vice versa. With `TILE_SIZE = 256`,
+ *  a value of 32 means neighbors activate at ~12.5% overlap, which at
+ *  ~10 cells/sec cycle speed gives ~3 seconds of visible approach before
+ *  the tile boundary. Too small → peers appear suddenly; too large →
+ *  more active meshes (resource cost). Tune once multi-tile worlds are
+ *  exercised in practice. */
+export const SHADOW_ZONE_WIDTH = 32;

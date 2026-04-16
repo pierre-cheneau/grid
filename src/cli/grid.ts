@@ -11,12 +11,13 @@ import { daemonColorSeed, daemonPlayerId } from '../daemon/id.js';
 import { resolveIdentity } from '../id/cache.js';
 import { rebaseIdentity } from '../id/identity.js';
 import type { LocalIdentity } from '../id/identity.js';
-import { TICK_DURATION_MS } from '../net/constants.js';
+import { SHADOW_ZONE_WIDTH, TICK_DURATION_MS } from '../net/constants.js';
 import { setDebugLogger } from '../net/debug.js';
 import { NetClient } from '../net/index.js';
 import { createNostrRoom } from '../net/nostr-room.js';
 import { NostrPool } from '../net/nostr.js';
-import { tileOfPos } from '../net/tile-id.js';
+import { shadowTilesOf } from '../net/shadow.js';
+import { tileKeyOf, tileOfPos } from '../net/tile-id.js';
 import { dayStartMs, seedFromDay, tickAtTime, todayTag } from '../net/time.js';
 import {
   NostrPublisher,
@@ -472,6 +473,27 @@ async function main(): Promise<void> {
   setupKeyboard(client, shutdown);
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+
+  // Stage 16: shadow-zone driver. On each tick where we have a fresh alive
+  // local player, compute the desired shadow tile set from its position and
+  // reconcile the NetClient's active meshes against it. Change-detection
+  // via a sorted key string avoids redundant no-op updates — in single-tile
+  // worlds (the current CLI default) this fires at most once.
+  let lastShadowKey: string | null = null;
+  const driveShadowSet = (state: GridState): void => {
+    const me = state.players.get(id.id);
+    if (!me || !me.isAlive) return;
+    const desired = shadowTilesOf(me.pos, SHADOW_ZONE_WIDTH);
+    const key = desired.map(tileKeyOf).join('|');
+    if (key === lastShadowKey) return;
+    lastShadowKey = key;
+    // Fire-and-forget: the tick loop must not block on Room creation. Any
+    // failure is swallowed by the shadow-update chain internally; the only
+    // way it surfaces is if all subsequent attempts also fail, which would
+    // just mean `activeTiles()` is incomplete — a best-effort optimization.
+    void client.updateShadowSet(desired);
+  };
+
   setInterval(
     () => {
       const now = Date.now();
@@ -532,6 +554,7 @@ async function main(): Promise<void> {
       const prevState = client.currentState;
       const result = client.runOnce(now);
       if (result !== null) {
+        driveShadowSet(result);
         const me = result.players.get(id.id);
         if (me) tracker.update(me.isAlive, me.score, now);
         dayTracker.observe(result, now);
