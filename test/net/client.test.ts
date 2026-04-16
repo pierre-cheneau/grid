@@ -57,27 +57,24 @@ class FakeClock {
 describe('NetClient integration via MockRoom', () => {
   it('two clients converge to identical hashes after 200 ticks', async () => {
     const net = new MockRoomNetwork();
-    const factory = net.factory();
     const clockA = new FakeClock();
     const clockB = new FakeClock();
 
     const a = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 0xa11ce, joinedAt: 1000 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clockA.now },
+      { roomFactory: net.tileFactory('alice@host'), clock: () => clockA.now },
     );
     const b = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 0xb0b, joinedAt: 1001 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clockB.now },
+      { roomFactory: net.tileFactory('bob@host'), clock: () => clockB.now },
     );
 
     await a.start();
@@ -108,25 +105,22 @@ describe('NetClient integration via MockRoom', () => {
 
   it('a turn input from one client propagates and changes both states identically', async () => {
     const net = new MockRoomNetwork();
-    const factory = net.factory();
     const clock = new FakeClock();
     const a = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('alice@host'), clock: () => clock.now },
     );
     const b = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 2, joinedAt: 1001 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('bob@host'), clock: () => clock.now },
     );
     await a.start();
     await b.start();
@@ -158,7 +152,6 @@ describe('NetClient integration via MockRoom', () => {
    */
   it('late joiner installs senior state and converges (realistic CLI flow)', async () => {
     const net = new MockRoomNetwork();
-    const factory = net.factory();
     const clock = new FakeClock();
 
     // Each client's initial state contains ONLY its own player. This is what
@@ -208,21 +201,19 @@ describe('NetClient integration via MockRoom', () => {
 
     const a = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 0xa11ce, joinedAt: 1000 },
         initialState: aliceOnly(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('alice@host'), clock: () => clock.now },
     );
     const b = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 0xb0b, joinedAt: 1001 },
         initialState: bobOnly(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('bob@host'), clock: () => clock.now },
     );
 
     await a.start();
@@ -270,25 +261,22 @@ describe('NetClient integration via MockRoom', () => {
    */
   it('a turn pressed AFTER the first broadcast still propagates to the other peer', async () => {
     const net = new MockRoomNetwork();
-    const factory = net.factory();
     const clock = new FakeClock();
     const a = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('alice@host'), clock: () => clock.now },
     );
     const b = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'bob@host', colorSeed: 2, joinedAt: 1001 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('bob@host'), clock: () => clock.now },
     );
     await a.start();
     await b.start();
@@ -330,16 +318,14 @@ describe('NetClient integration via MockRoom', () => {
    */
   it('rejects messages from a session that has not yet sent HELLO', async () => {
     const net = new MockRoomNetwork();
-    const factory = net.factory();
     const clock = new FakeClock();
     const a = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('alice@host'), clock: () => clock.now },
     );
     await a.start();
 
@@ -361,16 +347,14 @@ describe('NetClient integration via MockRoom', () => {
 
   it('deployDaemon after stop throws rather than leaking a subprocess', async () => {
     const net = new MockRoomNetwork();
-    const factory = net.factory();
     const clock = new FakeClock();
     const a = new NetClient(
       {
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(),
         homeTile: { x: 0, y: 0 },
       },
-      { roomFactory: factory, clock: () => clock.now },
+      { roomFactory: net.tileFactory('alice@host'), clock: () => clock.now },
     );
     await a.start();
     await a.stop();

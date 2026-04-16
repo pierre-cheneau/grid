@@ -36,7 +36,7 @@ import type {
 import { ProtocolError } from './messages.js';
 import { PeerRegistry } from './peer-registry.js';
 import { encodeMessage, parseMessage } from './protocol.js';
-import type { Room, RoomFactory } from './room.js';
+import type { Room } from './room.js';
 import { buildStateResponse, installSnapshot, pickResponder } from './sync.js';
 import type { TileId } from './tile-id.js';
 
@@ -59,13 +59,14 @@ export interface TileMeshCallbacks {
 
 export interface TileMeshConfig {
   readonly tile: TileId;
-  readonly roomKey: string;
   readonly identity: NetIdentity;
   readonly initialState: GridState;
 }
 
 export interface TileMeshDeps {
-  readonly roomFactory: RoomFactory;
+  /** Pre-bound to the mesh's tile by the NetClient orchestrator — the tile
+   *  is already baked into the closure, so the factory takes no arguments. */
+  readonly roomFactory: () => Promise<Room>;
   readonly clock: () => number;
 }
 
@@ -137,7 +138,7 @@ export class TileMesh {
 
   async start(): Promise<void> {
     dbg(`mesh[${this.localId}@${this.tile.x},${this.tile.y}]: start`);
-    this.room = await this.deps.roomFactory(this.cfg.roomKey, this.localId);
+    this.room = await this.deps.roomFactory();
     this.room.onCtrl((raw, sid) => this.onMessage(raw, sid));
     this.room.onTick((raw, sid) => this.onMessage(raw, sid));
     this.room.onPeerLeave((sid) => this.onTransportLeave(sid));

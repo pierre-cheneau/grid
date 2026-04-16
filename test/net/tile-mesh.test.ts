@@ -120,11 +120,10 @@ function makeMesh(
   return new TileMesh(
     {
       tile: { x: 0, y: 0 },
-      roomKey: 'grid:test',
       identity: { id: pid, colorSeed, joinedAt },
       initialState: initialState(statePids),
     },
-    { roomFactory: net.factory(), clock },
+    { roomFactory: () => Promise.resolve(net.createRoom(pid)), clock },
     spy.cb,
   );
 }
@@ -224,11 +223,13 @@ describe('TileMesh lifecycle', () => {
     const mesh = new TileMesh(
       {
         tile: { x: 3, y: -2 },
-        roomKey: 'grid:test',
         identity: { id: 'alice@host', colorSeed: 1, joinedAt: 1000 },
         initialState: initialState(['alice@host']),
       },
-      { roomFactory: net.factory(), clock: () => 0 },
+      {
+        roomFactory: () => Promise.resolve(net.createRoom('alice@host')),
+        clock: () => 0,
+      },
       spy.cb,
     );
     assert.deepEqual(mesh.tile, { x: 3, y: -2 });

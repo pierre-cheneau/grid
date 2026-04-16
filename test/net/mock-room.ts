@@ -11,7 +11,7 @@
 // sender as a player id, it will fail in CI for the same reason real Trystero
 // connections fail.
 
-import type { Room, RoomFactory } from '../../src/net/room.js';
+import type { Room, TileRoomFactory } from '../../src/net/room.js';
 
 type Listener = (raw: string, sessionId: string) => void;
 type PeerListener = (sessionId: string) => void;
@@ -96,7 +96,37 @@ export class MockRoomNetwork {
     };
   }
 
-  factory(): RoomFactory {
-    return async (_roomKey, localPlayerId) => this.createRoom(localPlayerId);
+  /** Stage 15+: tile-ignoring factory for NetClient construction in tests.
+   *  All meshes in the same MockRoomNetwork share one peer topology — fine
+   *  for tests that exercise one tile at a time. For multi-tile tests that
+   *  need per-tile isolation, use `isolatedTileRoomFactory`. */
+  tileFactory(localPlayerId: string): TileRoomFactory {
+    return async (_tile) => this.createRoom(localPlayerId);
   }
+}
+
+/** Stage 15+: per-tile isolation helper. Each distinct tile gets its own
+ *  MockRoomNetwork — peers on different tiles do not see each other, mirroring
+ *  the production invariant that each Nostr topic is tile-scoped. Returns
+ *  both the TileRoomFactory to inject into NetClient, and a getter so tests
+ *  can reach into a specific tile's network. */
+export function isolatedTileRoomFactory(localPlayerId: string): {
+  factory: TileRoomFactory;
+  networkFor: (tile: { x: number; y: number }) => MockRoomNetwork;
+} {
+  const nets = new Map<string, MockRoomNetwork>();
+  const keyOf = (t: { x: number; y: number }): string => `${t.x},${t.y}`;
+  const networkFor = (tile: { x: number; y: number }): MockRoomNetwork => {
+    const k = keyOf(tile);
+    let net = nets.get(k);
+    if (net === undefined) {
+      net = new MockRoomNetwork();
+      nets.set(k, net);
+    }
+    return net;
+  };
+  return {
+    networkFor,
+    factory: async (tile) => networkFor(tile).createRoom(localPlayerId),
+  };
 }

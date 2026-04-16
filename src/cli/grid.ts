@@ -364,18 +364,21 @@ async function main(): Promise<void> {
 
   const client = new NetClient(
     {
-      roomKey: gridCfg.room,
       identity: id,
       initialState,
       homeTile,
     },
     {
-      roomFactory: async () =>
+      // Stage 15: factory takes the target tile so NetClient can spin up
+      // one Room per mesh. Today the CLI only ever uses the home tile; when
+      // shadow zones activate (Stage 16+) the same closure handles all of
+      // them uniformly.
+      roomFactory: async (tile) =>
         createNostrRoom({
           pool,
           dayTag,
           localPubkey: id.nostrPubkey,
-          homeTile,
+          homeTile: tile,
         }),
       clock: Date.now,
     },
